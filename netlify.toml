@@ -1,0 +1,20 @@
+[build]
+  publish = "public"
+  # Plain files, nothing to build. Skip a deploy when an upload only changes notes, tests, scripts or the SQL.
+  ignore = "git diff --quiet $CACHED_COMMIT_REF $COMMIT_REF -- . ':(exclude)*.md' ':(exclude)tests/' ':(exclude)scripts/' ':(exclude)supabase/'"
+
+[build.environment]
+  # The Supabase address is public by design (it sits in public/config.js).
+  SECRETS_SCAN_OMIT_KEYS = "SUPABASE_URL"
+
+# Private tool: keep it out of search engines, out of other sites' frames, and away from
+# the camera, microphone, location and payments.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Robots-Tag = "noindex, nofollow"
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "DENY"
+    Content-Security-Policy = "frame-ancestors 'none'"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=(), payment=()"

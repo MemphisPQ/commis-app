@@ -1,0 +1,51 @@
+/* Commis's public homepage (sites/commis/home.html), laid out like a printed menu. The rest of the look is style.css. */
+html.home-wait .home { display: none; }
+/* One language at a time; the other stays in the page. */
+html[data-home-lang="fr"] .home > [lang="en"], html[data-home-lang="fr"] .home__pitch > [lang="en"],
+html[data-home-lang="en"] .home > [lang="fr"], html[data-home-lang="en"] .home__pitch > [lang="fr"] { display: none; }
+
+.home { max-width: 980px; margin: 0 auto; }
+.home__lang { display: flex; justify-content: flex-end; gap: 4px; margin-bottom: 8px; }
+.home__lang button { font: inherit; font-size: 0.9rem; font-weight: 600; padding: 3px 8px; min-height: 30px; border: 0; background: none; color: var(--muted); cursor: pointer;
+  border-radius: 3px 9px 4px 8px / 8px 4px 9px 3px; }
+.home__lang button:hover { color: var(--ink); }
+.home__lang button:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--brand); }
+html[data-home-lang="fr"] [data-lang-pick="fr"], html[data-home-lang="en"] [data-lang-pick="en"] { color: var(--ink); background-color: var(--mark); }
+
+.home__top { display: grid; gap: 28px; align-items: start; margin-bottom: 44px; }
+.home__name { font-family: var(--serif); font-weight: 400; font-size: clamp(3rem, 8vw, 4.6rem); line-height: 1.05; margin: 0 0 6px; }
+.home__line { font-family: var(--serif); font-size: clamp(1.35rem, 3.2vw, 1.8rem); line-height: 1.25; margin: 0 0 14px; }
+.home__pitch p { max-width: 34em; }
+.home__why { color: var(--muted); }
+.home__pitch .btn { margin-top: 6px; }
+.home__note { color: var(--muted); font-size: 0.86rem; margin-top: 12px; }
+.home__auth .welcome__card { margin: 0; max-width: none; padding-top: 22px; }
+.home__auth .welcome__card h2 { margin-top: 0; }
+
+.home__menu { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 30px clamp(18px, 5vw, 56px) 22px; margin-bottom: 44px; }
+.home__menu h2, .home__house h2 { font-family: var(--serif); font-weight: 400; font-size: 1.7rem; text-align: center; margin: 0 0 22px; }
+.home__menu dl { margin: 0; }
+.home__menu dl > div { margin-bottom: 22px; }
+.home__menu dt { display: flex; align-items: baseline; gap: 8px; font-weight: 700; font-size: 1.08rem; }
+/* The dots between a dish and its price. */
+.home__menu dt i { flex: 1; min-width: 20px; border-bottom: 2px dotted var(--field-line); transform: translateY(-4px); }
+.home__menu dt b { font-weight: 600; color: var(--brand); white-space: nowrap; }
+.home__menu dd { margin: 3px 0 0; color: var(--muted); max-width: 44em; font-style: italic; }
+.home__menu dd [data-tip] { margin-left: 4px; font-style: normal; font-weight: 600; white-space: nowrap; }
+
+.home__house { margin-bottom: 40px; }
+.home__rules { display: grid; gap: 22px 40px; }
+.home__rules h3 { font-size: 1.05rem; margin: 0 0 4px; }
+.home__rules p { margin: 0; color: var(--muted); }
+
+.home__foot { border-top: 1px solid var(--line); padding-top: 16px; color: var(--muted); font-size: 0.9rem; text-align: center; }
+.home__foot p { margin: 0 0 6px; }
+
+@media (min-width: 761px) {
+  .home__top { grid-template-columns: minmax(0, 1fr) 380px; gap: 48px; }
+  .home__rules { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 480px) {
+  /* Long "price" words go under the name rather than squeezing it. */
+  .home__menu dt { flex-wrap: wrap; }
+}

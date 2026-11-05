@@ -1,0 +1,15 @@
+{
+  "name": "commis",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Free recipe costing, supplier invoices, inventory and menus for restaurants",
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.10",
+    "mammoth": "^1.8.0",
+    "xlsx": "^0.18.5"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,34 @@
+/* Commis's legal pages: the app's colours, on a page that needs nothing else from the app. */
+:root {
+  --bg: #f5f2ec; --panel: #ffffff; --ink: #1e2321; --muted: #6a706c; --line: #e6e1d6; --brand: #1f5c4a; --soft: #e6efe9;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #131715; --panel: #1b201e; --ink: #e9ece9; --muted: #a3aba6; --line: #2f3633; --brand: #7cc4ad; --soft: #1f2d28; color-scheme: dark; }
+}
+body { margin: 0; background: var(--bg); color: var(--ink); font: 1rem/1.65 Figtree, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+.legal { max-width: 760px; margin: 0 auto; padding: 24px 16px 56px; }
+.legal__nav { display: flex; flex-wrap: wrap; gap: 6px 18px; padding-bottom: 14px; border-bottom: 1px solid var(--line); font-size: 0.9rem; }
+.legal__lang { margin-left: auto; }
+h1 { font-size: 2rem; line-height: 1.2; margin: 24px 0 4px; }
+h2 { font-size: 1.1rem; margin: 28px 0 6px; }
+a { color: var(--brand); }
+a:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+ul { padding-left: 22px; }
+li { margin-bottom: 6px; }
+.legal__date { color: var(--muted); font-size: 0.88rem; margin: 0 0 20px; }
+.legal__short { background: var(--soft); border-radius: 12px; padding: 4px 18px 8px; margin: 0 0 24px; }
+.legal__short h2 { margin-top: 14px; }
+.legal__foot { margin-top: 40px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.88rem; }
+
+/* The accessibility options, picked in the app or on the welcome page (access.js). */
+@font-face { font-family: OpenDyslexic; src: url("fonts/opendyslexic-latin-400-normal.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: OpenDyslexic; src: url("fonts/opendyslexic-latin-700-normal.woff2") format("woff2"); font-weight: 700; font-display: swap; }
+:root[data-size="large"] { font-size: 120%; }
+:root[data-size="xlarge"] { font-size: 145%; }
+:root[data-dyslexia] body { font-family: OpenDyslexic, Figtree, system-ui, sans-serif; font-size: 0.92rem; line-height: 1.8; word-spacing: 0.08em; }
+:root[data-lowvision] { --bg: #ffffff; --panel: #ffffff; --ink: #000000; --muted: #262626; --line: #595959; --brand: #003d2e; --soft: #d9ebe3; }
+:root[data-lowvision] a:focus-visible { outline-width: 3px; }
+@media (prefers-color-scheme: dark) {
+  :root[data-lowvision] { --bg: #000000; --panel: #000000; --ink: #ffffff; --muted: #e6e6e6; --line: #a6a6a6; --brand: #7df0c9; --soft: #06332a; }
+}

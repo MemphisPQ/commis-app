@@ -1,0 +1,8 @@
+node_modules/
+# Your restaurant's sheets, invoices and the seed made from them: private, never uploaded.
+data/
+.netlify/
+
+# Commis: its build, and the token that uploads it (private).
+dist/
+sites/commis/netlify.env
