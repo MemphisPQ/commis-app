@@ -110,6 +110,15 @@
   const qbSubtotal = (t) => after(t, new RegExp("(?:TOTAL PARTIEL|SUBTOTAL|SOUS-TOTAL)\\s*:?\\s*\\$?\\s*" + AMT));
   const isQuickBooks = (t) => /TOTAL/.test(t) && textLines(t).some(isQbHead);
 
+  // A size range, not a multiplication: "138/140UN" is a case of 138 to 140, "5/9UN 1LB" a bag of 5 to 9. It costs out at the middle.
+  // ("15/12UN" is 15 flats of 12, and "6/2KG" is 6 bags of 2 kg: those still multiply.)
+  function rangePack(text) {
+    const m = String(text).match(/(\d+)\/(\d+)\s*UN\b/i);
+    if (!m) return null;
+    const a = +m[1], b = +m[2];
+    return a < b && b - a <= a ? { qty: Math.round((a + b) / 2), unit: "unit" } : null;
+  }
+
   // Pepper: distributors take orders through it, and its confirmation emails look the same whichever one you order from.
   // "Hector Larivée <hello+…@messages.usepepper.com>Thu, Aug 20, 2026" ... "4Dill 1UN UNUnit00683CA$2.25CA$9.00"
   // Items off the order guide run over lines: "2Carrots Medium 5LB CL" / "Non-order guide" / "Bag00259CA$3.20CA$6.40".
@@ -139,7 +148,8 @@
       // Icons from the email (a favourite star) come through as private-use characters: drop them.
       const item = m[2].replace(/[\uE000-\uF8FF\u200B-\u200D\uFEFF]/g, "").replace(/\s+(CS|UN|LB|KG|BAG|CA|BX|BN|DZ)\s*$/i, "").trim();
       // How Hector sells it (case, bag, unit…) is only for showing: their "Unit" can be a pack ("Chives 4UN").
-      out.push({ date, item, qty, uom: "PK", sold: m[3] ? { Pound: "lb", Kilogram: "kg" }[m[3]] || m[3].toLowerCase() : undefined, price, total, code: m[4] });
+      const range = rangePack(item);
+      out.push({ date, item, qty, uom: "PK", sold: m[3] ? { Pound: "lb", Kilogram: "kg" }[m[3]] || m[3].toLowerCase() : undefined, price, total, code: m[4], ...(range ? { pack: range } : {}) });
     }
     return out;
   }
@@ -149,6 +159,74 @@
     const m = t.match(/^(.+?) <[^>]*usepepper\.com>/m);
     return knownName(m ? m[1] : t) || (m ? m[1].trim() : "Pepper order");
   }
+
+  /* ---------- Hector Larivée's own invoice: the PDF that comes with the delivery, not Pepper's order email ---------- */
+  // "0778622Ciboulettes4UN CLMEX$8.25$16.50" = code 07786 | ordered 2 | shipped 2 | name | pack | sold by | origin | price | total.
+  const isHectorInvoice = (t) => /Facture \/ Invoice/.test(t) && /Sous-total \/ Sub-total/.test(t);
+  // This PDF draws an accent as its own mark, before its letter: "Lariv \u0301ee", "Bo\u02C6\u0131te", "Enti`ere". Over a capital or an
+  // i the mark lands on a line alone, which splits the row: "0114311" / " \u0301" / "Echalotes Larges10LB CS" / "QC$26.60$26.60".
+  const LONE_MARK = /^\s*([\u0301\u00B4`\u02C6\u0308\u00A8])\s*$/;
+  const COMBINING = { "\u00B4": "\u0301", "`": "\u0300", "\u02C6": "\u0302", "\u00A8": "\u0308" };
+  const dotted = (c) => (c === "\u0131" ? "i" : c);
+  const placeAccents = (s) => s
+    .replace(/\s?([\u0301\u0308])\s?([A-Za-z\u0131])/g, (_, mark, c) => dotted(c) + mark)   // these two ride on a space that isn't one
+    .replace(/([\u00B4`\u02C6\u00A8])([A-Za-z\u0131])/g, (_, mark, c) => dotted(c) + COMBINING[mark])
+    .replace(/([cC])\s?[\u00B8\u0327]/g, "$1\u0327")
+    .replace(/\u0131/g, "i")
+    .normalize("NFC");
+  function hectorLines(t) {
+    const out = [], raw = t.split("\n");
+    for (let i = 0; i < raw.length; i++) {
+      const lone = raw[i].match(LONE_MARK);
+      if (!lone || !out.length || raw[i + 1] == null) { out.push(raw[i]); continue; }
+      const prev = out[out.length - 1], next = raw[++i];
+      // In the middle of a word ("Ma" + mark + "ıs"), or right after the code, it just joins. After a word, a capital starts a new one.
+      out[out.length - 1] = prev + (/[a-z\u00E0-\u00FF]$/.test(prev) && /^[A-Z]/.test(next) ? " " : "") + placeAccents(lone[1] + next);
+    }
+    return out.map((s) => placeAccents(s).trim()).filter(Boolean);
+  }
+  const SOLD_BY = { CS: "case", CA: "case", UN: "unit", CL: "bag", BG: "bag", BAG: "bag", BX: "box", BN: "bunch", DZ: "dozen", LB: "lb", KG: "kg" };
+  const HECTOR_ROW = /^(\d{5})(\d{2,})(\D.*?)\$([\d,]*\.\d{2})\$([\d,]*\.\d{2})$/;
+  const HECTOR_PACK = /^(.*?\D)(\d[\d/.,]*(?:UN|LBS?|KG|GR?|OZ|LT?|ML|CT|DZ)(?: [0-9A-Z]{2,4}?)?)([A-Z]{2,3})?$/;
+  // The digits after the code are ordered and shipped, run together: the price × the shipped amount has to give the total.
+  function hectorShipped(digits, price, total) {
+    const tries = [];
+    for (let k = 1; k < digits.length; k++) tries.push([+digits.slice(0, k), +digits.slice(k)]);
+    const fits = tries.filter(([, s]) => s > 0 && close(s * price, total));
+    const best = fits.find(([o, s]) => o === s) || fits[0];
+    return best ? best[1] : price > 0 ? +(total / price).toFixed(3) : 1;
+  }
+  function hectorInvoice(t) {
+    const d = t.match(/Date:\s*(\d{2})\/(\d{2})\/(\d{2})/);   // day/month/year: the due date a week later shows it
+    const date = d ? iso("20" + d[3], d[2], d[1]) : null;
+    const L = hectorLines(t), out = [];
+    for (let i = 0; i < L.length; i++) {
+      let l = L[i];
+      // A row split over lines isn't done until its two prices show up.
+      if (/^\d{7,}/.test(l) && !HECTOR_ROW.test(l)) {
+        for (let k = i + 1; k < L.length && k <= i + 2 && !/^\d{7,}/.test(L[k]); k++) {
+          l += L[k];
+          if (HECTOR_ROW.test(l)) { i = k; break; }
+        }
+      }
+      const m = l.match(HECTOR_ROW);
+      if (!m) continue;
+      const price = +m[4].replace(/,/g, ""), total = +m[5].replace(/,/g, "");
+      if (!total) continue;   // the $0 "Boîte d'unité", or something that didn't come
+      const p = m[3].match(HECTOR_PACK);
+      const [size, by] = p ? p[2].split(" ") : ["", ""];
+      const named = by && !/\d/.test(by);
+      const format = p ? (named ? size : p[2]) : "", range = rangePack(format);
+      out.push({ date, item: (p ? p[1] : m[3]).trim(), format, code: m[1], qty: hectorShipped(m[2], price, total), uom: "PK",
+        sold: named ? SOLD_BY[by] || by.toLowerCase() : undefined, price, total, ...(range ? { pack: range } : {}) });
+    }
+    return out;
+  }
+  function hectorSubtotal(t) {
+    const m = t.match(/Sous-total \/ Sub-total\s*\$([\d,]*\.\d{2})/);
+    return m ? +m[1].replace(/,/g, "") : null;
+  }
+
   const SHARED = [
     { is: isQuickBooks, name: qbName, read: quickbooks, subtotal: qbSubtotal },
     { is: isPepper, name: pepperName, read: pepper, subtotal: pepperSubtotal },
@@ -200,7 +278,7 @@
       }
       return out;
     },
-    "Hector Larivée": pepper,
+    "Hector Larivée": (t) => (isHectorInvoice(t) ? hectorInvoice(t) : pepper(t)),
     // "6  Maitake17.00102.00"
     "Champignon Inc"(t) {
       const date = (t.match(/\d{4}-\d{2}-\d{2}/) || [])[0];
@@ -279,7 +357,7 @@
 
   // The subtotal printed on each supplier's invoice (before taxes), to catch lines the reader missed.
   const SUBTOTALS = {
-    "Hector Larivée": pepperSubtotal,
+    "Hector Larivée": (t) => (isHectorInvoice(t) ? hectorSubtotal(t) : pepperSubtotal(t)),
     "Chez Nino": qbSubtotal,
     BrinNature: qbSubtotal,
     // Its subtotal includes the taxes and any shipping: the lines are before tax, and shipping isn't one of them.
@@ -385,6 +463,7 @@
   /** What one invoice "price" buys, from the uom and the pack written in the description:
    * "3 lb", "10 x 5 lb", "4x4LT", "3x1KG", "12/1LT", "16UN", "(sac - 50 lbs)", per kg / per lb… */
   function packOf(p, Units) {
+    if (p.pack) return p.pack;
     if (/^(KG|KL)$/.test(p.uom)) return { qty: 1, unit: "kg" };
     if (/^(LB|LV)$/.test(p.uom)) return { qty: 1, unit: "lb" };
     if (p.uom === "DZ") return { qty: 12, unit: "unit" };
@@ -423,6 +502,19 @@
   /** How a line is remembered on a supplier price ("name on invoice"): its description and pack as printed. */
   const lineKey = (l) => (l.item + (l.format ? " " + l.format : "")).trim().slice(0, 120);
 
+  /** The supplier price a saved invoice line updates, or null for a new one. The same description is the same product. So is
+   * the same supplier, item and pack under another name: Hector's invoice says "Aneth Dill 1UN" where his order email says
+   * "Dill 1UN". A different pack is a different product, unless the price it was matched to has no description yet. */
+  function offerFor(line, supplier, offers, preferredId) {
+    const key = lineKey(line);
+    const samePack = (o) => o.supplier === supplier && +o.pack_qty === +line.packQty && o.pack_unit === line.packUnit;
+    return offers.find((o) => o.supplier === supplier && o.supplier_item === key)
+      || offers.find((o) => o.id === preferredId && samePack(o))
+      || offers.find(samePack)
+      || (line.offerId && offers.find((o) => o.id === line.offerId && (!o.supplier || o.supplier === supplier) && !o.supplier_item))
+      || null;
+  }
+
   /** Which ingredient an invoice line is, and in what pack: a remembered name first, then the same price with a
    * shared word, then every word of the ingredient in the description. Returns null when nothing fits. */
   function suggest(line, supplier, data, Units) {
@@ -457,7 +549,7 @@
     return null;
   }
 
-  const api = { SUPPLIERS: SUPPLIERS.map((s) => s[0]), read, readers, words, share, perKg, billedAs, packOf, fold, lineKey, suggest };
+  const api = { SUPPLIERS: SUPPLIERS.map((s) => s[0]), read, readers, words, share, perKg, billedAs, packOf, fold, lineKey, suggest, offerFor };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.Invoices = api;
 })(typeof window !== "undefined" ? window : globalThis);

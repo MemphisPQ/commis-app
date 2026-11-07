@@ -321,8 +321,11 @@
   async function logPrice(offer, source) {
     const ing = get("ingredients", offer.ingredient_id);
     if (!ing || parseNum(offer.pack_cost) == null || !parseNum(offer.pack_qty)) return;
-    await insert("price_history", { id: uid(), offer_id: offer.id, ingredient_id: ing.id, supplier: offer.supplier, pack_cost: offer.pack_cost,
-      pack_qty: offer.pack_qty, pack_unit: offer.pack_unit, date: today(), source });
+    const fields = { supplier: offer.supplier, pack_cost: offer.pack_cost, pack_qty: offer.pack_qty, pack_unit: offer.pack_unit };
+    // Typing a new cost and then its pack size is one change: today's typed row follows along instead of leaving half-done ones behind.
+    const todays = source === "Typed in" && data.price_history.find((h) => h.offer_id === offer.id && h.date === today() && h.source === source);
+    if (todays) return patch("price_history", todays.id, fields);
+    await insert("price_history", { id: uid(), offer_id: offer.id, ingredient_id: ing.id, ...fields, date: today(), source });
   }
 
   /* ---------- failsafes: drafts and recently deleted ---------- */
@@ -600,7 +603,16 @@
 
   // Filters in lists work on the drawn rows, so typing doesn't redraw the page.
   const listFilters = new Map(); // per page, this visit only (see afterRender)
+  /** A recipe's lines are a table when it fits and one card per line when it doesn't, so they never scroll sideways. */
+  function fitLines() {
+    const table = main.querySelector(".lines--recipe");
+    if (!table) return;
+    table.classList.remove("lines--stack");
+    const box = table.closest(".table-wrap");
+    if (window.innerWidth <= 760 || box.scrollWidth > box.clientWidth + 1) table.classList.add("lines--stack");
+  }
   function afterRender() {
+    fitLines();
     main.querySelectorAll("input[list]").forEach(ownList);
     drawHistChart();
     // On a phone, tables marked .cards show one card per row: each value is labelled with its column's heading.
@@ -754,7 +766,7 @@
       ${isDish && Store.part9Old() ? `<p class="note note--bad">Run part 9 of supabase/schema.sql in Supabase (SQL Editor) to save dish categories.</p>` : ""}
       ${isDish ? `<p class="hint">Target: cost × multiplier (×4 by default, a 25% food cost). <span class="fc fc--ok">on target</span> = at or under target, <span class="fc fc--over">over</span> = over it.</p>` : `<p class="hint">${SITE.commis ? "Preps are the things you make ahead (sauces, doughs, stocks…): cost them once, then use them in any dish." : `Preps are the "Recipe 1–6" tabs of your costing sheets. Use them in any dish.`}</p>`}
       <div class="table-wrap"><table class="list cards">
-        <thead><tr><th>Name</th>${isDish ? "<th class=hide-sm>Category</th><th class=hide-sm>Menu</th><th class=num>Cost / portion</th><th class=num>×4 price</th><th class=num>Menu price</th><th class=num>Food cost</th>" : "<th class=num>Cost / portion</th><th class=num>Batch cost</th><th class=num>Makes</th>"}<th>Since last check</th></tr></thead>
+        <thead><tr><th>Name</th>${isDish ? "<th class=hide-sm>Category</th><th class=hide-sm>Menu</th><th class=num>Cost / portion</th><th class=num>Target</th><th class=num>Menu price</th><th class=num>Food cost</th>" : "<th class=num>Cost / portion</th><th class=num>Batch cost</th><th class=num>Makes</th>"}<th>Since last check</th></tr></thead>
         <tbody>${rows || `<tr><td colspan="8" class="muted">${SITE.commis ? `Nothing yet: add your first one with “+ New ${isDish ? "dish" : "prep"}”.` : "Nothing yet. Import your sheets in Settings, or add one."}</td></tr>`}</tbody>
       </table></div>`;
   }
@@ -831,17 +843,18 @@
     const s = coster.summary(r.id);
     const isDish = r.kind === "dish";
     const usedIn = coster.usedBy(r.id).filter((x) => x !== r.id).map((x) => get("recipes", x)).filter(Boolean).sort(byName);
-    const lineRows = s.lines.map((row, i) => lineRow(row, i, s.lines.length)).join("");
+    const lineRows = s.lines.map((row) => lineRow(row, s.lines.length)).join("");
 
-    const yieldUnits = ["portion", "kg", "L", "unit", "recipe"];
+    // A price other than per portion says what it's per.
+    const perWhat = r.yield_unit === "portion" ? "" : ` per ${esc(unitLabel(r.yield_unit))}`;
     const totals = `
       <div class="totals">
         <div><span>Batch cost</span><strong>${money(s.total)}</strong></div>
         <div><span>Cost per ${esc(unitLabel(r.yield_unit))}</span><strong>${money(s.perPortion, true)}</strong></div>
         ${isDish ? `
         <div><span>Multiplier</span><input class="in in--num" inputmode="decimal" data-k="r-mult" data-act="recipe-field" data-field="multiplier" value="${esc(numText(r.multiplier || 4))}" aria-label="Multiplier" /></div>
-        <div class="big"><span>Target price (×${esc(numText(s.multiplier))})</span><strong>${money(s.suggested)}</strong></div>
-        <div><span>Menu price</span>${moneyInput(`data-k="r-price" data-act="recipe-field" data-field="menu_price" value="${esc(numText(r.menu_price))}" aria-label="Menu price"`)}</div>
+        <div class="big"><span>Target price (×${esc(numText(s.multiplier))})${perWhat}</span><strong>${money(s.suggested)}</strong></div>
+        <div><span>Menu price${perWhat}</span>${moneyInput(`data-k="r-price" data-act="recipe-field" data-field="menu_price" value="${esc(numText(r.menu_price))}" aria-label="Menu price"`)}</div>
         <div class="big"><span>Food cost</span>${s.foodCost == null ? `<strong class="muted">—</strong>` : `<strong class="fc ${s.over ? "fc--over" : "fc--ok"}">${pct(s.foodCost)}</strong>`}</div>
         <div><span>Menu price ÷ cost</span><strong>${s.actualMultiplier ? "×" + s.actualMultiplier.toFixed(2) : "—"}</strong></div>
         ${s.over ? `<p class="note note--bad">Over target: the ×${esc(numText(s.multiplier))} price is ${money(s.suggested)}, ${money(s.suggested - s.menuPrice)} more than the menu price.</p>` : s.menuPrice ? `<p class="note note--ok">At or under the ${pct(s.target)} target.</p>` : ""}` : ""}
@@ -868,12 +881,10 @@
           ${isDish ? `<label>Category <input class="in" list="dl-dish-cats" data-suggest-all data-k="r-cat" data-act="recipe-field" data-field="category" value="${esc(r.category || "")}" placeholder="Plats, Dessert…" /></label>
           <label>Menu <input class="in" list="dl-menus" data-suggest-all data-k="r-menu" data-act="recipe-field" data-field="menu" value="${esc(r.menu || "")}" />${(r.menu || "").trim()
             ? ` <a class="small" href="#/menu/${encodeURIComponent(r.menu.trim())}">Open menu</a>` : ""}</label>` : ""}
-          ${isDish ? `<label>Makes <input class="in in--num" inputmode="decimal" data-k="r-yield" data-act="recipe-field" data-field="yield_qty" value="${esc(numText(r.yield_qty))}" />
-            <select class="in" data-k="r-yu" data-act="recipe-field" data-field="yield_unit">${yieldUnits.map((u) => `<option value="${u}"${r.yield_unit === u ? " selected" : ""}>${plural(u)}</option>`).join("")}</select></label>` : ""}
           ${!isDish ? `<label class="check" title="Counted in the monthly inventory, at what it costs to make"><input type="checkbox" data-k="r-inv" data-act="recipe-field" data-field="in_inventory" ${r.in_inventory === true ? "checked" : ""} /> On the monthly count</label>
           ${r.in_inventory === true ? containerBox("recipe", r) : ""}` : ""}
         </div>
-        ${!isDish ? measureBoxes("recipe", r.id, Costing.recipeMeasures(r), { costPer: r.yield_unit }) : ""}
+        ${measureBoxes("recipe", r.id, Costing.recipeMeasures(r), { costPer: r.yield_unit })}
       </div>
 
       <div class="grid2">
@@ -906,7 +917,7 @@
         </section>
         <aside>${totals}
           ${allergenSide(r)}
-          ${!isDish ? (() => {
+          ${!isDish || parseNum(r.locked_cost) != null ? (() => {
             const rc = coster.recipeCost(r.id);
             return `<section class="card card--side"><h2>Cost lock</h2>${lockBox({ kind: "recipe", id: r.id, unit: r.yield_unit, locked: parseNum(r.locked_cost), at: r.locked_at, live: rc.live ? rc.live.perYield : rc.perYield })}
               ${rc.locked ? `<p class="hint">The lines on the left show today's prices: ${money(rc.live.total)} a batch.</p>` : ""}</section>`;
@@ -918,7 +929,7 @@
       </div>`;
   }
 
-  function lineRow(row, i, count) {
+  function lineRow(row, count) {
     const l = row.line;
     let item = "", units = [], supplier = "";
     if (l.ingredient_id) {
@@ -941,7 +952,7 @@
       if (row.offer && row.offer.locked) supplier += " " + lockTag(row.offer.locked_at);
     } else if (l.sub_recipe_id) {
       const sub = get("recipes", l.sub_recipe_id);
-      item = sub ? `<a href="#/recipe/${encodeURIComponent(sub.id)}/from/${encodeURIComponent(l.recipe_id)}">${esc(sub.name)}</a> <span class="tag">prep</span>` : `<span class="muted">(deleted)</span>`;
+      item = sub ? `<a href="#/recipe/${encodeURIComponent(sub.id)}/from/${encodeURIComponent(l.recipe_id)}">${esc(sub.name)}</a> <span class="tag">${sub.kind === "dish" ? "dish" : "prep"}</span>` : `<span class="muted">(deleted)</span>`;
       // Either of the prep's measures: what it makes, and its other measure (e.g. portions or grams).
       const unitsFor = (m) => (m === "portion" ? ["portion"] : m ? RECIPE_UNITS.filter((u) => Units.baseOf(u) === Units.baseOf(m)) : []);
       // …or by the recipe (the whole batch).
@@ -949,7 +960,7 @@
       supplier = sub && parseNum(sub.locked_cost) != null ? lockTag(sub.locked_at) : `<span class="muted">—</span>`;
     }
     if (l.unit && !units.includes(l.unit)) units = [l.unit, ...units];
-    return `<tr class="${row.problem ? "has-problem" : ""}">
+    return `<tr class="${row.problem ? "has-problem" : ""}" data-line="${esc(l.id)}">
       <td>${item}${row.problem ? `<div class="problem">${esc(row.problem)}</div>` : ""}</td>
       <td class="num"><input class="in in--num" inputmode="decimal" data-k="l-qty-${l.id}" data-act="line-field" data-field="qty" data-id="${esc(l.id)}" value="${esc(numText(l.qty))}" aria-label="Quantity" /></td>
       <td><select class="in" data-k="l-unit-${l.id}" data-act="line-field" data-field="unit" data-id="${esc(l.id)}" aria-label="Unit">${units.map((u) => `<option value="${u}"${l.unit === u ? " selected" : ""}>${esc(unitLabel(u))}</option>`).join("")}</select></td>
@@ -959,8 +970,7 @@
       <td class="num muted">${row.unitPrice == null ? "—" : money(row.unitPrice, true) + per(row.priceUnit)}${row.lineYield ? `<div class="small">at ${esc(yieldPct(row.lineYield))}% here</div>` : ""}</td>
       <td class="num"><strong>${money(row.cost)}</strong></td>
       <td class="row-actions">
-        <button class="icon" data-act="move-line" data-dir="-1" data-id="${esc(l.id)}" ${i === 0 ? "disabled" : ""} aria-label="Move up">↑</button>
-        <button class="icon" data-act="move-line" data-dir="1" data-id="${esc(l.id)}" ${i === count - 1 ? "disabled" : ""} aria-label="Move down">↓</button>
+        ${count > 1 ? `<button class="icon drag-handle" type="button" data-k="l-move-${l.id}" data-drag-line="${esc(l.id)}" title="Drag to move" aria-label="Move ${esc(lineName(l))}: drag it, or press the up and down arrow keys"><svg viewBox="0 0 10 16" width="10" height="16" aria-hidden="true"><circle cx="2.5" cy="3" r="1.5"/><circle cx="7.5" cy="3" r="1.5"/><circle cx="2.5" cy="8" r="1.5"/><circle cx="7.5" cy="8" r="1.5"/><circle cx="2.5" cy="13" r="1.5"/><circle cx="7.5" cy="13" r="1.5"/></svg></button>` : ""}
         <button class="icon icon--x" data-act="delete-line" data-id="${esc(l.id)}" aria-label="Remove">×</button>
       </td>
     </tr>`;
@@ -1335,7 +1345,12 @@
     const priceOf = (h) => coster.offerPrice({ pack_cost: h.pack_cost, pack_qty: h.pack_qty, pack_unit: h.pack_unit }, i);
     const rows = data.price_history.filter((h) => h.ingredient_id === i.id && h.date)
       .map((h) => ({ h, date: h.date, supplier: (h.supplier || "").trim() || "No supplier", price: priceOf(h), start: STARTING.test(h.source || "") }));
-    const dated = rows.filter((x) => !x.start && x.price != null).sort((a, b) => a.date.localeCompare(b.date) || 0);
+    // Each supplier price, day by day: where the day ended up, not the steps of typing it in.
+    const finals = new Set();
+    const perOffer = new Map();
+    for (const x of rows) { if (x.start) continue; const k = x.h.offer_id || x.supplier; if (!perOffer.has(k)) perOffer.set(k, []); perOffer.get(k).push(x.h); }
+    for (const list of perOffer.values()) Costing.lastOfEachDay(list).forEach((h) => finals.add(h));
+    const dated = rows.filter((x) => !x.start && x.price != null && finals.has(x.h)).sort((a, b) => a.date.localeCompare(b.date) || 0);
     const to = today();
     const from = period[2] ? monthsBefore(to, period[2]) : dated.length ? dated[0].date : to;
     // Per supplier: the price going into the period (its last one before it), then each one in it.
@@ -1350,7 +1365,7 @@
       return { name, before, points, first, last, low, high, count: points.length };
     }).filter((s) => s.points.length || s.before)
       .sort((a, b) => b.count - a.count || (b.last.date || "").localeCompare(a.last.date || ""));
-    const listed = rows.filter((x) => !x.start && x.date >= from).sort((a, b) => b.date.localeCompare(a.date));
+    const listed = rows.filter((x) => !x.start && finals.has(x.h) && x.date >= from).sort((a, b) => b.date.localeCompare(a.date));
     // Change against the same supplier's price before it.
     for (const x of listed) { const prev = dated.filter((y) => y.supplier === x.supplier && y.date < x.date).pop(); x.prev = prev ? prev.price : null; }
     return { period, from, to, suppliers, listed, starting: rows.filter((x) => x.start) };
@@ -2033,9 +2048,7 @@
       if (!l.include || !v.ready) continue;
       const i = v.i, key = Invoices.lineKey(l);
       const mine = data.offers.filter((o) => o.ingredient_id === i.id);
-      // Same supplier and same description = the same product: update it. Otherwise it's a new price.
-      let o = mine.find((x) => x.supplier === inv.supplier && x.supplier_item === key)
-        || (l.offerId && mine.find((x) => x.id === l.offerId && (!x.supplier || x.supplier === inv.supplier) && !x.supplier_item));
+      let o = Invoices.offerFor(l, inv.supplier, mine, i.preferred_offer_id);
       const fields = { supplier: inv.supplier, supplier_item: key, pack_cost: l.price, pack_qty: +l.packQty, pack_unit: l.packUnit, updated_at: inv.date || today() };
       if (o) await patch("offers", o.id, fields);
       else o = await insert("offers", { id: uid(), ingredient_id: i.id, ...fields });
@@ -2328,9 +2341,10 @@
     }
     const moves = [];
     for (const list of byOffer.values()) {
-      if (list.length < 2) continue;
-      list.sort((a, b) => (a.date || "").localeCompare(b.date || ""));
-      const [prev, last] = list.slice(-2);
+      // Day by day: only where each day ended up counts, not the steps of typing it in.
+      const days = Costing.lastOfEachDay(list);
+      if (days.length < 2) continue;
+      const [prev, last] = days.slice(-2);
       const ing = get("ingredients", last.ingredient_id);
       if (!ing) continue;
       const p0 = coster.offerPrice(prev, ing), p1 = coster.offerPrice(last, ing);
@@ -2350,7 +2364,7 @@
     return `
       <div class="bar"><h1>Price changes</h1>${sums.length ? `<button class="btn" data-act="ack-all">Mark all as seen</button>` : ""}</div>
       <p class="hint">Dishes and preps whose cost moved since you last pressed "Got it". <span class="chip chip--up">▲ up</span> costs more, <span class="chip chip--down">▼ down</span> costs less.</p>
-      ${sums.length ? `<div class="table-wrap"><table class="list cards"><thead><tr><th>Name</th><th class="num">Was</th><th class="num">Now</th><th>Change</th><th class="num">×4 price</th><th class="num">Menu price</th><th class="num">Food cost</th><th><span class="vh">Actions</span></th></tr></thead><tbody>${rows}</tbody></table></div>`
+      ${sums.length ? `<div class="table-wrap"><table class="list cards"><thead><tr><th>Name</th><th class="num">Was</th><th class="num">Now</th><th>Change</th><th class="num">Target</th><th class="num">Menu price</th><th class="num">Food cost</th><th><span class="vh">Actions</span></th></tr></thead><tbody>${rows}</tbody></table></div>`
         : `<p class="empty">Nothing has changed since your last check.</p>`}
       <h2>Latest supplier price moves</h2>
       ${moves.length ? `<div class="table-wrap"><table class="list small cards"><thead><tr><th>Date</th><th>Ingredient</th><th>Supplier</th><th class="num">Was</th><th class="num">Now</th></tr></thead><tbody>
@@ -2882,7 +2896,9 @@
       } else if (f === "qty") {
         const unit = el.closest("[data-measure]").querySelector("select").value;
         if (!text && !was) return render();
-        if (!text) {
+        // A dish always makes something: emptying what its cost is per means one of them, as it always has.
+        if (!text && isRecipe && x.kind === "dish" && at === x.yield_unit) was.qty = 1;
+        else if (!text) {
           // Emptying a measure recipes rely on: they'd have no cost, so it asks. It's still your call.
           const fits = (u) => !!u && Units.convert(1, u, at) != null;
           const links = isRecipe ? new Set(data.ingredients.filter((i) => i.prep_id === x.id).map((i) => i.id)) : new Set([x.id]);
@@ -2926,22 +2942,14 @@
         return;
       }
       let v = el.value;
-      if (["multiplier", "menu_price", "yield_qty"].includes(f)) {
+      if (["multiplier", "menu_price"].includes(f)) {
         v = parseNum(v);
-        // Left empty, a dish makes one.
-        if (f === "yield_qty" && v == null) v = 1;
-        if (f === "yield_qty" && !(v > 0)) { toast("Makes must be more than 0.", true); return render(); }
         if (f === "multiplier" && !(v > 0)) v = 4;
       }
       if (f === "name" && !v.trim()) { toast("A name is needed.", true); return render(); }
       if (f === "category") return actions["dish-cat"]({ dataset: { id: r.id }, value: v });
       if (f === "menu" && r.kind === "dish") return actions["dish-menu"]({ dataset: { id: r.id }, value: v });
       const changes = { [f]: typeof v === "string" ? v.trim() : v };
-      // Changing how a prep is measured changes its cost per unit: start the "since last check" from here.
-      if (f === "yield_qty" || f === "yield_unit") {
-        await write(async () => { await patch("recipes", r.id, changes); await settle(r.id); });
-        return;
-      }
       await write(() => patch("recipes", r.id, changes));
     },
     // A dish's category, from its page or straight from the Dishes list.
@@ -3103,14 +3111,6 @@
       const entry = toTrash(`${item ? item.name : "a line"} from ${get("recipes", line.recipe_id).name}`, "line", { lines: [{ ...line }] });
       await write(async () => { await removeRows("lines", line.id); await settle(line.recipe_id); });
       if (!write.failed) toast(`Removed ${item ? item.name : "the line"}.`, false, undoFor(entry));
-    },
-    async "move-line"(el) {
-      const line = get("lines", el.dataset.id);
-      const list = data.lines.filter((l) => l.recipe_id === line.recipe_id).sort((a, b) => (a.pos || 0) - (b.pos || 0));
-      const i = list.indexOf(line), j = i + +el.dataset.dir;
-      if (j < 0 || j >= list.length) return;
-      [list[i], list[j]] = [list[j], list[i]];
-      await write(async () => { for (const [k, l] of list.entries()) if (l.pos !== k + 1) await patch("lines", l.id, { pos: k + 1 }); });
     },
     async ack(el) {
       await write(() => patch("recipes", el.dataset.id, { ack_cost: round4(coster.recipeCost(el.dataset.id).perYield) }));
@@ -3658,6 +3658,71 @@
     const el = e.target.closest("button[data-act]");
     if (el && actions[el.dataset.act]) { e.preventDefault(); write.failed = false; actions[el.dataset.act](el); }
   });
+  /* ---------- moving a recipe line ---------- */
+  // Grab its dots with a mouse or a finger and the row follows. The arrow keys on the dots do the same, one place at a time.
+  const lineIds = (body) => [...body.querySelectorAll("tr[data-line]")].map((x) => x.dataset.line);
+  async function saveLineOrder(ids) {
+    write.failed = false;
+    await write(async () => {
+      for (const [k, id] of ids.entries()) {
+        const l = get("lines", id);
+        if (l && l.pos !== k + 1) await patch("lines", id, { pos: k + 1 });
+      }
+    });
+  }
+  let lineDrag = null;
+  function placeDraggedLine() {
+    const d = lineDrag;
+    if (!d || !d.row.isConnected) return;
+    const next = [...d.body.querySelectorAll("tr[data-line]")].filter((x) => x !== d.row).find((x) => { const b = x.getBoundingClientRect(); return d.y < b.top + b.height / 2; });
+    const before = next || d.body.querySelector("tr.addrow");
+    if (d.row.nextElementSibling !== before) d.body.insertBefore(d.row, before);
+  }
+  // Near the top or bottom of the screen the page scrolls, so a line can go anywhere in a long recipe.
+  function scrollWhileDragging() {
+    if (!lineDrag) return;
+    const edge = 70, y = lineDrag.y, h = window.innerHeight;
+    const step = y < edge ? (y - edge) / 4 : y > h - edge ? (y - (h - edge)) / 4 : 0;
+    if (step) { window.scrollBy(0, step); placeDraggedLine(); }
+    requestAnimationFrame(scrollWhileDragging);
+  }
+  function endLineDrag(keep) {
+    const d = lineDrag;
+    if (!d) return;
+    lineDrag = null;
+    d.row.classList.remove("is-dragging");
+    document.body.classList.remove("dragging-line");
+    if (!d.row.isConnected) return;
+    if (!keep) return render();
+    const ids = lineIds(d.body);
+    if (ids.join() !== d.from.join()) saveLineOrder(ids);
+  }
+  main.addEventListener("pointerdown", (e) => {
+    const handle = e.target.closest("[data-drag-line]");
+    if (!handle || e.button !== 0) return;
+    // No focus change: leaving a box mid-typing would save and redraw the page under the drag.
+    e.preventDefault();
+    const row = handle.closest("tr"), body = row.parentElement;
+    lineDrag = { row, body, y: e.clientY, from: lineIds(body) };
+    try { handle.setPointerCapture(e.pointerId); } catch { /* it still works while the pointer stays on the page */ }
+    row.classList.add("is-dragging");
+    document.body.classList.add("dragging-line");
+    requestAnimationFrame(scrollWhileDragging);
+  });
+  main.addEventListener("pointermove", (e) => { if (lineDrag) { lineDrag.y = e.clientY; placeDraggedLine(); } });
+  main.addEventListener("pointerup", () => endLineDrag(true));
+  main.addEventListener("pointercancel", () => endLineDrag(false));
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && lineDrag) endLineDrag(false); });
+  main.addEventListener("keydown", (e) => {
+    const handle = e.target.closest && e.target.closest("[data-drag-line]");
+    if (!handle || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+    e.preventDefault();
+    const ids = lineIds(handle.closest("tbody")), i = ids.indexOf(handle.dataset.dragLine), j = i + (e.key === "ArrowUp" ? -1 : 1);
+    if (j < 0 || j >= ids.length) return;
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+    const name = lineName(get("lines", handle.dataset.dragLine));
+    saveLineOrder(ids).then(() => { if (!write.failed) toast(`${name} moved ${e.key === "ArrowUp" ? "up" : "down"}.`); });
+  });
   main.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && e.target.matches("input.in[data-act]")) {
       e.preventDefault();
@@ -3958,6 +4023,11 @@
   window.addEventListener("resize", () => { clearTimeout(resizing); resizing = setTimeout(drawHistChart, 150); });
   const badgeRoom = () => document.body.classList.toggle("has-badge", !!document.getElementById("nl-badge-frame"));
   new MutationObserver(badgeRoom).observe(document.body, { childList: true });
+  // What decides whether a recipe's lines fit: the window, the text size, and the lettering once it has loaded.
+  let fitting = 0;
+  window.addEventListener("resize", () => { cancelAnimationFrame(fitting); fitting = requestAnimationFrame(fitLines); });
+  new MutationObserver(fitLines).observe(document.documentElement, { attributes: true, attributeFilter: ["data-size", "data-dyslexia"] });
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(fitLines);
   badgeRoom();
   // The site's own name in the header and the tab.
   $(".brand__name").textContent = SITE.name;

@@ -58,6 +58,19 @@
     return out;
   }
 
+  /**
+   * One supplier price's history, one row per day, oldest first: the last row of each day. Changing a price takes more than one
+   * save (the cost, then the pack size, maybe a typo on the way), and only where it ended up was ever the price.
+   * Saved order comes from created_at; rows without one (this browser's own data) keep the order they were saved in.
+   */
+  function lastOfEachDay(rows) {
+    const days = new Map();
+    rows.map((h, k) => ({ h, k }))
+      .sort((a, b) => String(a.h.date || "").localeCompare(String(b.h.date || "")) || String(a.h.created_at || "").localeCompare(String(b.h.created_at || "")) || a.k - b.k)
+      .forEach(({ h }) => days.set(h.date, h));
+    return [...days.values()];
+  }
+
   /** What's left once the containers come off the scale's number. null when it's lighter than they are. */
   function netWeight(typed, containers, tare) {
     const net = +(typed - containers * tare).toFixed(6);
@@ -353,7 +366,7 @@
     return { offerPrice, offersFor, defaultOffer, liveOffer, chosenOffer, linkedOffer, recipeCost, subAmount, itemAmount, packAmount, batchSize, itemMeasures, countChoices, summary, usedBy, ingredients, recipes, linesByRecipe };
   }
 
-  const api = { create, amountIn, savedMeasures, recipeMeasures, withPortionSize, netWeight, DEFAULT_MULTIPLIER };
+  const api = { create, amountIn, savedMeasures, recipeMeasures, withPortionSize, netWeight, lastOfEachDay, DEFAULT_MULTIPLIER };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.Costing = api;
 })(typeof window !== "undefined" ? window : globalThis);

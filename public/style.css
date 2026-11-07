@@ -203,6 +203,12 @@ table.small th { font-size: 0.7rem; }
 .lines td:first-child a { font-weight: 700; color: var(--ink); }
 .lines td:first-child a:hover { color: var(--brand); }
 .row-actions { white-space: nowrap; text-align: right; }
+/* Moving a recipe line: grab the dots. touch-action keeps a finger on them from scrolling the page instead. */
+.drag-handle { cursor: grab; touch-action: none; vertical-align: middle; line-height: 0; }
+.drag-handle svg { fill: currentColor; }
+.drag-handle:hover { color: var(--ink); }
+tr.is-dragging { outline: 2px solid var(--brand); outline-offset: -2px; background: var(--brand-soft); }
+body.dragging-line, body.dragging-line * { cursor: grabbing !important; user-select: none; -webkit-user-select: none; }
 .has-problem td { background: var(--check-bg); }
 .problem { color: var(--check); font-size: 0.82rem; }
 .in--cat { width: 130px; min-height: 32px; padding: 4px 8px; font-size: 0.9rem; }
@@ -223,6 +229,24 @@ table.small th { font-size: 0.7rem; }
   main { padding-left: 16px; padding-right: 16px; }
   .lines--recipe .in--sup { min-width: 90px; }
 }
+/* A recipe's lines as one card per line: on a phone, and whenever the table wouldn't fit its box, which depends on the screen,
+   the text size and what's in the lines (fitLines in app.js measures it). So the box never scrolls sideways. */
+.lines--recipe.lines--stack thead { display: none; }
+.lines--recipe.lines--stack tbody tr:not(.addrow) { display: grid; grid-template-columns: calc(96px * var(--box)) minmax(0, 1fr) auto; grid-template-areas: "item item cost" "qty unit yld" "sup sup sup" "price price act";
+  gap: 6px 8px; align-items: center; padding: 12px 12px; border-bottom: 1px solid var(--line); }
+.lines--recipe.lines--stack td { display: block; padding: 0; border: 0; min-width: 0; }
+.lines--recipe.lines--stack td:nth-child(1) { grid-area: item; font-size: 1rem; overflow-wrap: anywhere; }
+.lines--recipe.lines--stack td:nth-child(2) { grid-area: qty; text-align: left; }
+.lines--recipe.lines--stack td:nth-child(3) { grid-area: unit; }
+.lines--recipe.lines--stack td:nth-child(4) { grid-area: yld; }
+.lines--recipe.lines--stack td:nth-child(5) { grid-area: sup; }
+.lines--recipe.lines--stack td:nth-child(6) { grid-area: price; text-align: left; }
+.lines--recipe.lines--stack td:nth-child(7) { grid-area: cost; font-size: 1.05rem; }
+.lines--recipe.lines--stack td:nth-child(8) { grid-area: act; }
+.lines--recipe.lines--stack .in--num { width: 100%; }
+.lines--recipe.lines--stack .in--yield { width: calc(64px * var(--box)); }
+.lines--recipe.lines--stack select.in, .lines--recipe.lines--stack .in--sup { width: 100%; min-width: 0; max-width: none; }
+.lines--recipe.lines--stack .addrow, .lines--recipe.lines--stack .addrow td { display: block; }
 /* Price history: chart colours are the validated categorical slots 1–3 (light and dark steps). */
 :root { --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; }
 @media (prefers-color-scheme: dark) { :root { --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; } }
@@ -297,7 +321,8 @@ table.small th { font-size: 0.7rem; }
   background: transparent; border-color: transparent; }
 .in--title:hover { border-color: var(--field-line); background: var(--field); }
 .head__meta { display: flex; flex-wrap: wrap; gap: 10px 20px; align-items: center; color: var(--muted); }
-.head__meta label { display: inline-flex; gap: 7px; align-items: center; font-size: 0.92rem; }
+.head__meta label { display: inline-flex; flex-wrap: wrap; gap: 7px; align-items: center; font-size: 0.92rem; max-width: 100%; }
+.head__meta .in { max-width: 100%; }
 .head__meta .in--num { width: calc(84px * var(--box)); text-align: right; }
 .grid2 { display: grid; grid-template-columns: minmax(0, 1fr) 310px; gap: 24px; align-items: start; }
 .grid2 > * { min-width: 0; }
@@ -327,6 +352,9 @@ table.small th { font-size: 0.7rem; }
 .totals--row .big { padding-top: 0; border-top: 0; }
 .inv .in--num { width: calc(96px * var(--box)); text-align: right; }
 .alert { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 16px; border-radius: var(--radius-sm); margin-bottom: 12px; border-left: 4px solid currentColor; }
+.alert { flex-wrap: wrap; }
+.alert > div { flex: 1 1 240px; min-width: 0; }
+.alert .btn, .crumbs .btn { max-width: 100%; white-space: normal; overflow-wrap: anywhere; height: auto; }
 .alert--up { background: var(--up-bg); color: var(--up); }
 .alert--down { background: var(--down-bg); color: var(--down); }
 .alert--check { background: var(--check-bg); color: var(--check); }
@@ -343,10 +371,10 @@ table.small th { font-size: 0.7rem; }
 
 /* ---------- locked prices ---------- */
 .lock { display: grid; gap: 10px; }
-.lock__text { margin: 0; }
+.lock__text { margin: 0; overflow-wrap: anywhere; }
 .lock--on { padding: 12px 14px; border-radius: var(--radius-sm); background: var(--brand-soft); }
 .lock--on .actions { margin-top: 0; }
-.lock__field { display: inline-flex; align-items: center; gap: 8px; }
+.lock__field { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: 100%; }
 .lock__field .in { width: 110px; text-align: right; }
 .tag--lock { background: var(--brand-soft); color: var(--brand); border-color: transparent; }
 .card--side { margin: 16px 0 0; padding: 4px 18px 18px; }
@@ -614,21 +642,6 @@ select.count-unit { padding-left: 8px; padding-right: 2px; }
   table.inv tbody tr:not(.section-row) { padding: 9px 14px; }
 
   /* A recipe's lines: the item and its cost, then amount and unit, the supplier, the price and the buttons. */
-  .lines--recipe thead { display: none; }
-  .lines--recipe tbody tr:not(.addrow) { display: grid; grid-template-columns: 96px minmax(0, 1fr) auto; grid-template-areas: "item item cost" "qty unit yld" "sup sup sup" "price price act";
-    gap: 6px 8px; align-items: center; padding: 12px 12px; border-bottom: 1px solid var(--line); }
-  .lines--recipe td { display: block; padding: 0; border: 0; }
-  .lines--recipe td:nth-child(1) { grid-area: item; font-size: 1rem; }
-  .lines--recipe td:nth-child(2) { grid-area: qty; text-align: left; }
-  .lines--recipe td:nth-child(3) { grid-area: unit; }
-  .lines--recipe td:nth-child(4) { grid-area: yld; }
-  .lines--recipe td:nth-child(5) { grid-area: sup; }
-  .lines--recipe td:nth-child(6) { grid-area: price; text-align: left; }
-  .lines--recipe td:nth-child(7) { grid-area: cost; font-size: 1.05rem; }
-  .lines--recipe td:nth-child(8) { grid-area: act; }
-  .lines--recipe .in--num { width: calc(96px * var(--box)); }
-  .lines--recipe select.in, .lines--recipe .in--sup { width: 100%; max-width: none; }
-  .lines--recipe .addrow, .lines--recipe .addrow td { display: block; }
 
   /* Supplier prices: who and the name on invoice, then pack price and size, then the price per kg and date. */
   .lines--offers thead { display: none; }

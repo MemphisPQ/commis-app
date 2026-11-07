@@ -5,6 +5,27 @@ const Costing = require("../public/costing.js");
 
 const close = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} != ${b}`);
 
+test("a dish has the same measures as a prep, and they cost the same whichever way a recipe uses it", () => {
+  const data = {
+    ingredients: [{ id: "beef", name: "Beef", base: "kg", yield: 1 }],
+    offers: [{ id: "o", ingredient_id: "beef", supplier: "X", pack_cost: 20, pack_qty: 1, pack_unit: "kg" }],
+    recipes: [
+      { id: "dish", name: "Stew", kind: "dish", yield_qty: 10, yield_unit: "portion", alt_qty: 2, alt_unit: "kg", measures: [{ qty: 3, unit: "L" }] },
+      { id: "byKg", name: "Plate A", kind: "dish", yield_qty: 1, yield_unit: "portion" }, { id: "byL", name: "Plate B", kind: "dish", yield_qty: 1, yield_unit: "portion" },
+    ],
+    lines: [{ id: "a", recipe_id: "dish", ingredient_id: "beef", qty: 2, unit: "kg" },
+      { id: "b", recipe_id: "byKg", sub_recipe_id: "dish", qty: 0.4, unit: "kg" }, { id: "c", recipe_id: "byL", sub_recipe_id: "dish", qty: 0.6, unit: "L" }],
+    counts: [], price_history: [],
+  };
+  assert.deepEqual(Costing.recipeMeasures(data.recipes[0]), [{ qty: 10, unit: "portion" }, { qty: 2, unit: "kg" }, { qty: 3, unit: "L" }]);
+  const c = Costing.create(data);
+  close(c.summary("dish").perPortion, 4);
+  close(c.summary("byKg").perPortion, 8, 1e-6);   // 0.4 of its 2 kg is 2 of its 10 portions
+  close(c.summary("byL").perPortion, 8, 1e-6);
+  // A portion's size gives the rest, for a dish as for a prep.
+  assert.deepEqual(Costing.withPortionSize([{ qty: 1, unit: "portion" }], 0.35), [{ qty: 1, unit: "portion" }, { qty: 0.35, unit: "kg" }]);
+});
+
 test("unit spellings from the Master Data sheet", () => {
   for (const s of ["kg", "Kg", "kgs"]) assert.equal(Units.parseUnit(s), "kg");
   for (const s of ["lbs", "Lbs", "lb"]) assert.equal(Units.parseUnit(s), "lb");
@@ -421,4 +442,21 @@ test("a measure taken away leaves nothing to guess with", () => {
   assert.equal(c.itemAmount(d.ingredients.find((i) => i.id === "li"), 1, "kg"), null);
   assert.equal(c.subAmount(1, "kg", prep), null);
   assert.ok(!c.countChoices(d.ingredients.find((i) => i.id === "li"), false).includes("kg"));
+});
+
+test("a price's history counts where each day ended up, not the steps of typing it in", () => {
+  // The cost, then a pack of 1, 12, a typo of 127, then the real 27.2 kg: saved in that order, read back in any order.
+  const a = { date: "2026-11-04", pack_cost: 190, pack_qty: 127, created_at: "2026-11-04T12:00:03Z" };
+  const b = { date: "2026-11-04", pack_cost: 190, pack_qty: 27.2, created_at: "2026-11-04T12:00:04Z" };
+  const c = { date: "2026-11-04", pack_cost: 190, pack_qty: 12, created_at: "2026-11-04T12:00:02Z" };
+  const e = { date: "2026-11-04", pack_cost: 190, pack_qty: 1, created_at: "2026-11-04T12:00:01Z" };
+  const old = { date: "2026-10-14", pack_cost: 7, pack_qty: 1, created_at: "2026-11-01T09:00:00Z" };
+  assert.deepEqual(Costing.lastOfEachDay([a, b, c, old, e]), [old, b]);
+  // Saved later but dated earlier (an old invoice): it stays in its own day.
+  const late = { date: "2026-09-01", pack_cost: 5, pack_qty: 1, created_at: "2026-11-05T09:00:00Z" };
+  assert.deepEqual(Costing.lastOfEachDay([b, late, old]), [late, old, b]);
+  // This browser's own data has no times: the order it was saved in.
+  const x = { date: "2026-11-04", pack_qty: 1 }, y = { date: "2026-11-04", pack_qty: 2 };
+  assert.deepEqual(Costing.lastOfEachDay([x, y]), [y]);
+  assert.deepEqual(Costing.lastOfEachDay([]), []);
 });

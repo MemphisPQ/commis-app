@@ -137,7 +137,8 @@ const Store = (() => {
           else if (t === "counts") schemaOld = true;
           else throw e;
         }
-        out[t] = rows.map(strip);
+        // A price's history keeps when each row was saved: the order of a day's changes depends on it.
+        out[t] = rows.map((r) => (t === "price_history" ? { ...strip(r), created_at: r.created_at } : strip(r)));
       }));
       if (schemaOld) part5Old = true;
       else { try { await this._call("counts?select=recipe_id&limit=1"); await this._call("ingredients?select=prep_id&limit=1"); await this._call("recipes?select=alt_qty&limit=1"); } catch { part5Old = true; } }
