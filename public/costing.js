@@ -299,7 +299,7 @@
       const seen = [...known];
       if (isPrep || linked || known.length) seen.push("recipe");
       if (!isPrep && num(x.each_kg) > 0) seen.push(Units.countable(base) ? "kg" : base === "kg" ? "unit" : "");
-      const others = ["kg", "L", "portion", "unit", "bunch", "recipe"].filter((u) => u !== base && seen.includes(u) && convert(u) > 0);
+      const others = ["kg", "L", "portion", "unit", "bunch", "recipe", "bottle"].filter((u) => u !== base && seen.includes(u) && convert(u) > 0);
       return [base, ...others];
     }
     function sameMeasure(qty, from, to) {

@@ -442,3 +442,200 @@ drop policy if exists "own rows" on public.saved_invoices;
 create policy "own rows" on public.saved_invoices for all to authenticated using (auth.uid() = user_id) with check (auth.uid() = user_id);
 revoke all on public.saved_invoices from anon;
 grant select, insert, update, delete on public.saved_invoices to authenticated;
+
+-- 19. Barback: a bar's own records in the same account (each site that turns it on: config.js, site.barback) ----------
+-- Every row says which set it's in: 'kitchen' (all that's there today, nothing about it changes) or 'barback'. Row level
+-- security is untouched: an account still sees its own rows and nobody else's. A cocktail's line can point at a kitchen item or
+-- prep (the rules on lines already stop either being deleted while a line uses it), so its price follows the kitchen's.
+--   empty_g, full_g    what a bottle weighs empty and full, in grams, so an opened one can be weighed
+--   full_bottles       a count's full bottles, as typed
+--   open_g             what its opened bottles weighed, as typed: "840" or "840+700"
+-- counts.qty stays the amount in stock: the full bottles plus what the weights come to.
+
+do $$
+declare t text;
+begin
+  foreach t in array array['ingredients', 'offers', 'price_history', 'recipes', 'lines', 'counts', 'closed_months', 'saved_invoices'] loop
+    execute format('alter table public.%I add column if not exists project text not null default ''kitchen'' check (project in (''kitchen'', ''barback''))', t);
+  end loop;
+end $$;
+alter table public.ingredients add column if not exists empty_g numeric check (empty_g is null or empty_g > 0);
+alter table public.ingredients add column if not exists full_g numeric check (full_g is null or full_g > 0);
+alter table public.counts add column if not exists full_bottles numeric check (full_bottles is null or full_bottles >= 0);
+alter table public.counts add column if not exists open_g text;
+-- Each set closes its own months: the same month can stand once in the kitchen and once in Barback.
+drop index if exists public.closed_months_one_standing;
+create unique index closed_months_one_standing on public.closed_months (user_id, project, month) where reopened_at is null;
+
+-- 20. People in an account: administrators and employees (each site that turns it on: config.js, site.teams; after part 19) ----------
+-- An account is still one person's own rows: its id is its owner's user id, so nothing moves and nobody loses anything. This
+-- lets other people in. The owner can do everything, in both Commis and Barback; "own rows" above still says so.
+--   administrator  changes anything on the side(s) they have, and gives people access
+--   employee       reads the side(s) they have, makes and changes their own recipes, adds their own items with an estimated
+--                  price (needs_check: flagged until an administrator double checks it), and counts only if can_count is on
+-- Someone with Barback only can read the kitchen's items and preps, which cocktails use, but not its dishes.
+-- What's on an invoice and the month's typed sales are for administrators.
+-- Each rule below is a real database rule: the app's screens only follow them.
+
+alter table public.ingredients add column if not exists created_by uuid references auth.users (id) on delete set null;
+alter table public.ingredients alter column created_by set default auth.uid();
+alter table public.ingredients add column if not exists needs_check boolean not null default false;
+alter table public.recipes add column if not exists created_by uuid references auth.users (id) on delete set null;
+alter table public.recipes alter column created_by set default auth.uid();
+
+create table if not exists public.members (
+  account_id    uuid not null references auth.users (id) on delete cascade,           -- the account: its owner's user id
+  email         text not null check (email = lower(email) and char_length(email) between 3 and 320),
+  user_id       uuid references auth.users (id) on delete cascade,                    -- empty until they accept
+  role          text not null default 'employee' check (role in ('admin', 'employee')),
+  kitchen       boolean not null default true,
+  barback       boolean not null default false,
+  can_count     boolean not null default false,
+  account_name  text not null default '',
+  invited_by    uuid default auth.uid() references auth.users (id) on delete set null,
+  accepted_at   timestamptz,
+  created_at    timestamptz not null default now(),
+  primary key (account_id, email),
+  check (kitchen or barback)
+);
+create unique index if not exists members_one_per_person on public.members (account_id, user_id) where user_id is not null;
+create index if not exists members_user_idx on public.members (user_id);
+
+-- Whoever's signed in: their email once it's confirmed, so nobody can take an invitation by signing up with someone else's address.
+create or replace function public.my_email() returns text
+language sql stable security definer set search_path = '' as $$
+  select lower(email) from auth.users where id = auth.uid() and email_confirmed_at is not null
+$$;
+
+-- The accounts I've joined, at a level ('read', 'count', 'admin') on a side ('kitchen', 'barback', 'any'). Rules below ask this once
+-- per request, not once per row.
+create or replace function public.my_accounts(side text, level text) returns setof uuid
+language sql stable security definer set search_path = '' as $$
+  select m.account_id from public.members m
+  where m.user_id = auth.uid()
+    and (side = 'any' or (side = 'kitchen' and m.kitchen) or (side = 'barback' and m.barback))
+    and (level = 'read' or m.role = 'admin' or (level = 'count' and m.can_count))
+$$;
+
+-- Taking up an invitation sent to my confirmed email. The only way a person gets joined to an account.
+create or replace function public.accept_invite(account uuid) returns void
+language plpgsql security definer set search_path = '' as $$
+declare
+  mail text := public.my_email();
+begin
+  if mail is null then raise exception 'Confirm your email first.'; end if;
+  if account = auth.uid() then raise exception 'This is already your own account.'; end if;
+  update public.members set user_id = auth.uid(), accepted_at = now() where account_id = account and email = mail and user_id is null;
+  if not found then raise exception 'That invitation is no longer there.'; end if;
+end $$;
+
+revoke all on function public.my_email() from public, anon;
+revoke all on function public.my_accounts(text, text) from public, anon;
+revoke all on function public.accept_invite(uuid) from public, anon;
+grant execute on function public.my_email() to authenticated;
+grant execute on function public.my_accounts(text, text) to authenticated;
+grant execute on function public.accept_invite(uuid) to authenticated;
+
+alter table public.members enable row level security;
+drop policy if exists "see" on public.members;
+drop policy if exists "invite" on public.members;
+drop policy if exists "change" on public.members;
+drop policy if exists "remove" on public.members;
+create policy "see" on public.members for select to authenticated
+  using (user_id = auth.uid() or email = public.my_email() or account_id = auth.uid() or account_id in (select public.my_accounts('any', 'admin')));
+create policy "invite" on public.members for insert to authenticated
+  with check ((account_id = auth.uid() or account_id in (select public.my_accounts('any', 'admin'))) and user_id is null);
+create policy "change" on public.members for update to authenticated
+  using (account_id = auth.uid() or account_id in (select public.my_accounts('any', 'admin')))
+  with check (account_id = auth.uid() or account_id in (select public.my_accounts('any', 'admin')));
+-- Administrators remove people; anyone can leave, or turn down an invitation.
+create policy "remove" on public.members for delete to authenticated
+  using (account_id = auth.uid() or account_id in (select public.my_accounts('any', 'admin')) or user_id = auth.uid() or email = public.my_email());
+revoke all on public.members from anon;
+revoke all on public.members from authenticated;
+grant select, delete on public.members to authenticated;
+-- Nobody can write user_id or accepted_at directly: only accept_invite does.
+grant insert (account_id, email, role, kitchen, barback, can_count, account_name) on public.members to authenticated;
+grant update (role, kitchen, barback, can_count, account_name) on public.members to authenticated;
+
+-- The month's typed sales and purchases, kept out of the settings row employees read for the sections.
+create table if not exists public.settings_private (
+  user_id     uuid primary key default auth.uid() references auth.users (id) on delete cascade,
+  data        jsonb not null default '{}'::jsonb check (jsonb_typeof(data) = 'object'),
+  updated_at  timestamptz not null default now()
+);
+alter table public.settings_private enable row level security;
+drop policy if exists "own rows" on public.settings_private;
+create policy "own rows" on public.settings_private for all to authenticated
+  using (auth.uid() = user_id or user_id in (select public.my_accounts('any', 'admin')))
+  with check (auth.uid() = user_id or user_id in (select public.my_accounts('any', 'admin')));
+revoke all on public.settings_private from anon;
+grant select, insert, update, delete on public.settings_private to authenticated;
+
+do $$
+declare
+  t text;
+  on_side constant text := $f$((project = 'kitchen' and user_id in (select public.my_accounts('kitchen', '%1$s'))) or (project = 'barback' and user_id in (select public.my_accounts('barback', '%1$s'))))$f$;
+  reading text := format(on_side, 'read');
+  admin text := format(on_side, 'admin');
+  counting text := format(on_side, 'count');
+  for_bar constant text := $f$(project = 'kitchen' and user_id in (select public.my_accounts('barback', 'read')))$f$;
+begin
+  -- Reading.
+  foreach t in array array['ingredients', 'offers', 'price_history'] loop
+    execute format('drop policy if exists "team read" on public.%I', t);
+    execute format('create policy "team read" on public.%I for select to authenticated using (%s or %s)', t, reading, for_bar);
+  end loop;
+  drop policy if exists "team read" on public.recipes;
+  execute format($p$create policy "team read" on public.recipes for select to authenticated using (%s or (%s and kind = 'prep'))$p$, reading, for_bar);
+  drop policy if exists "team read" on public.lines;
+  execute format($p$create policy "team read" on public.lines for select to authenticated using (%s or (%s and exists (select 1 from public.recipes r where r.id = lines.recipe_id and r.kind = 'prep')))$p$, reading, for_bar);
+  foreach t in array array['counts', 'closed_months'] loop
+    execute format('drop policy if exists "team read" on public.%I', t);
+    execute format('create policy "team read" on public.%I for select to authenticated using (%s)', t, reading);
+  end loop;
+
+  -- Administrators change everything on their side. (A closed month's own rules, from part 17, still hold: only reopening it can change it.)
+  foreach t in array array['ingredients', 'offers', 'price_history', 'recipes', 'lines', 'counts', 'saved_invoices'] loop
+    execute format('drop policy if exists "team admin" on public.%I', t);
+    execute format('create policy "team admin" on public.%I for all to authenticated using (%s) with check (%s)', t, admin, admin);
+  end loop;
+  drop policy if exists "team close" on public.closed_months;
+  drop policy if exists "team reopen" on public.closed_months;
+  execute format('create policy "team close" on public.closed_months for insert to authenticated with check (%s)', admin);
+  execute format('create policy "team reopen" on public.closed_months for update to authenticated using (%s) with check (%s)', admin, admin);
+
+  -- Employees: their own recipes and those recipes' lines, on a side they have.
+  drop policy if exists "team own" on public.recipes;
+  execute format('create policy "team own" on public.recipes for all to authenticated using (created_by = auth.uid() and %s) with check (created_by = auth.uid() and %s)', reading, reading);
+  drop policy if exists "team own" on public.lines;
+  execute format('create policy "team own" on public.lines for all to authenticated using (%1$s and exists (select 1 from public.recipes r where r.id = lines.recipe_id and r.user_id = lines.user_id and r.created_by = auth.uid())) with check (%1$s and exists (select 1 from public.recipes r where r.id = lines.recipe_id and r.user_id = lines.user_id and r.created_by = auth.uid()))', reading);
+
+  -- Employees: an item they added, and its estimated price, until an administrator has checked it. They can't clear the flag.
+  drop policy if exists "team own" on public.ingredients;
+  execute format('create policy "team own" on public.ingredients for all to authenticated using (created_by = auth.uid() and needs_check and %1$s) with check (created_by = auth.uid() and needs_check and locked_price is null and %1$s)', reading);
+  foreach t in array array['offers', 'price_history'] loop
+    execute format('drop policy if exists "team own" on public.%1$I', t);
+    execute format('create policy "team own" on public.%1$I for all to authenticated using (%2$s and exists (select 1 from public.ingredients i where i.id = %1$I.ingredient_id and i.user_id = %1$I.user_id and i.created_by = auth.uid() and i.needs_check)) with check (%2$s and exists (select 1 from public.ingredients i where i.id = %1$I.ingredient_id and i.user_id = %1$I.user_id and i.created_by = auth.uid() and i.needs_check))', t, reading);
+  end loop;
+
+  -- The count: administrators (above), and an employee with inventory access.
+  drop policy if exists "team count" on public.counts;
+  execute format('create policy "team count" on public.counts for all to authenticated using (%s) with check (%s)', counting, counting);
+
+  -- One settings row per account: everyone in it reads the sections, administrators change it.
+  drop policy if exists "team read" on public.settings;
+  drop policy if exists "team admin" on public.settings;
+  create policy "team read" on public.settings for select to authenticated using (user_id in (select public.my_accounts('any', 'read')));
+  create policy "team admin" on public.settings for all to authenticated using (user_id in (select public.my_accounts('any', 'admin'))) with check (user_id in (select public.my_accounts('any', 'admin')));
+end $$;
+
+-- What's already saved moves over, so it's out of what employees can read from the first day.
+insert into public.settings_private (user_id, data)
+  select user_id, jsonb_build_object('stockMonths', data -> 'stockMonths') from public.settings where data ? 'stockMonths'
+  on conflict (user_id) do update set data = public.settings_private.data || excluded.data;
+insert into public.settings_private (user_id, data)
+  select user_id, jsonb_build_object('barback', jsonb_build_object('stockMonths', data #> '{barback,stockMonths}')) from public.settings where data #> '{barback,stockMonths}' is not null
+  on conflict (user_id) do update set data = public.settings_private.data || excluded.data;
+update public.settings set data = data - 'stockMonths' where data ? 'stockMonths';
+update public.settings set data = data #- '{barback,stockMonths}' where data #> '{barback,stockMonths}' is not null;

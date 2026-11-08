@@ -95,6 +95,27 @@ code { background: var(--panel-2); padding: 0 4px; border-radius: 4px; }
 .brand:hover { text-decoration: none; }
 .brand__name { font: 400 1.3rem var(--serif); }
 .brand__sub { font-size: 0.68rem; letter-spacing: 0.16em; text-transform: uppercase; color: var(--top-muted); }
+.project-switch { flex: none; display: inline-flex; gap: 2px; padding: 3px; border-radius: 999px; background: rgba(255, 255, 255, 0.1); }
+.project-switch button { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 4px 12px 4px 10px; border: 0; border-radius: 999px; background: none; color: var(--top-muted); font: 700 0.82rem var(--sans); cursor: pointer; }
+.project-switch button::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #6cc3a2; }
+.project-switch button[data-project="barback"]::before { background: #6fb0f0; }
+.project-switch button:hover { color: var(--top-ink); }
+.project-switch button[aria-pressed="true"] { background: var(--top-ink); color: var(--top); }
+.project-switch button[data-project="kitchen"][aria-pressed="true"]::before { background: #1f5c4a; }
+.project-switch button[data-project="barback"][aria-pressed="true"]::before { background: #1d5fa8; }
+.project-switch button:focus-visible { outline: 2px solid var(--top-ink); outline-offset: 2px; }
+.signed-out .project-switch, .signed-out .account-switch, .signed-out .invites { display: none; }
+.account-switch { flex: 0 1 auto; max-width: 220px; min-height: 36px; padding: 4px 28px 4px 12px; border: 1px solid rgba(255, 255, 255, 0.28); border-radius: 999px; background-color: transparent; color: var(--top-ink); font: 700 0.82rem var(--sans); cursor: pointer; text-overflow: ellipsis; }
+.account-switch option { color: #1e2321; background: #ffffff; }
+.account-switch:focus-visible { outline: 2px solid var(--top-ink); outline-offset: 2px; }
+.invites { display: grid; gap: 8px; }
+.invite { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
+.invite__buttons { display: inline-flex; gap: 8px; }
+.tag--est { background: var(--check-bg); color: var(--check); }
+.people__access { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.people__add { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 14px; margin-top: 14px; }
+.people__add .block { margin: 0; flex: 0 1 220px; min-width: 0; }
+main[aria-busy="true"] { opacity: 0.55; pointer-events: none; }
 .nav { display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; min-width: 0; }
 .nav::-webkit-scrollbar { display: none; }
 .nav a { padding: 7px 14px; border-radius: 999px; color: var(--top-muted); white-space: nowrap; font-weight: 700; font-size: 0.92rem; }
@@ -418,6 +439,17 @@ select.count-unit { padding-left: 8px; padding-right: 2px; }
 .count-last__same { text-align: right; }
 .count-tare { display: block; margin-top: 4px; white-space: normal; font-size: 0.82rem; color: var(--muted); text-align: right; }
 .in--tare { width: calc(44px * var(--box)); min-height: 28px; padding: 1px 4px; text-align: center; }
+.in--open { width: calc(84px * var(--box)); min-height: 30px; padding: 1px 6px; text-align: right; }
+.tag--kitchen { background: var(--brand-soft); color: var(--brand); }
+.tag--bar { background: #e3edf8; color: #1d5fa8; }
+.bottle__boxes { display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center; }
+.bottle__boxes label { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 7px; font-size: 0.92rem; }
+.bottle__box { display: inline-flex; align-items: center; gap: 5px; }
+.bottle__box .in--num { flex: none; width: calc(84px * var(--box)); max-width: 60vw; }
+.bottle__price { margin: 12px 0 0; }
+.kitchen-fold { margin-top: 18px; }
+.kitchen-fold__list { columns: 2 280px; column-gap: 28px; margin-top: 8px; }
+.kitchen-fold__list li { break-inside: avoid; padding: 3px 0; }
 .print-text { display: none !important; }
 .print-only { display: none; }
 
@@ -790,6 +822,48 @@ select.count-unit { padding-left: 8px; padding-right: 2px; }
   .count-tare { max-width: calc(174px * var(--box) + 6px); }
 }
 
+/* Bigger text or the dyslexia font on a narrow screen: what no longer fits in a row wraps, so the page never runs off the
+   side. Only with those options on (and not on paper), so the usual look stays exactly as it is. */
+@media screen and (max-width: 760px) {
+  :root:is([data-size], [data-dyslexia]) main { overflow-wrap: anywhere; }
+  :root:is([data-size], [data-dyslexia]) main .in:not(.in--title), :root:is([data-size], [data-dyslexia]) .in-money { max-width: 100%; }
+  :root:is([data-size], [data-dyslexia]) :is(.hist-periods, .group-by, .measures__box, .measures__each, .measures__per, .measures__tare, .scale__form label, .totals > div, .sum-fc__rows > div, .sum-fc__rows > label, .sum-groups label, .catrow) { flex-wrap: wrap; max-width: 100%; }
+  :root:is([data-size], [data-dyslexia]) :is(.totals:not(.totals--row), .sum-fc__rows) { grid-template-columns: minmax(0, 1fr); }
+  :root:is([data-size], [data-dyslexia]) .hist-periods .sec { flex: 1 1 auto; margin-left: 0; }
+  :root:is([data-size], [data-dyslexia]) .hist-periods .sec::before { display: none; }
+  :root:is([data-size], [data-dyslexia]) .sum-groups select { flex: 1 1 100%; width: 100%; max-width: 100%; }
+  :root:is([data-size], [data-dyslexia]) .catrow .in { flex: 1 1 100%; }
+  :root:is([data-size], [data-dyslexia]) :is(.unchecked-items a, .section-row th) { white-space: normal; }
+  :root:is([data-size], [data-dyslexia]) .count-tare { max-width: none; }
+}
+/* The summary's four columns stop fitting: the group on its line, then this month and last, then the change. */
+@media screen and (max-width: 600px) {
+  :root:is([data-size], [data-dyslexia]) :is(.sum:not(.sum--spend), .sum:not(.sum--spend) > thead, .sum:not(.sum--spend) > tbody) { display: block; }
+  :root:is([data-size], [data-dyslexia]) .sum:not(.sum--spend) tr { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); border-bottom: 1px solid var(--line); }
+  :root:is([data-size], [data-dyslexia]) .sum:not(.sum--spend) tr > * { display: block; border: 0; white-space: normal; }
+  :root:is([data-size], [data-dyslexia]) .sum:not(.sum--spend) tr > :is(:first-child, :nth-child(4)) { grid-column: 1 / -1; }
+  :root:is([data-size], [data-dyslexia]) .sum:not(.sum--spend) thead th:first-child { display: none; }
+  :root:is([data-size], [data-dyslexia]) .sum:not(.sum--spend) .sum-total { border-top: 2px solid var(--line); border-bottom: 0; }
+}
+/* A recipe's line, a supplier's price and a count: boxes that sat side by side get a line each, and no box is squeezed to nothing. */
+@media screen and (max-width: 480px) {
+  :root:is([data-size], [data-dyslexia]) .lines--recipe.lines--stack tbody tr:not(.addrow) { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "item item" "qty unit" "yld cost" "sup sup" "price act"; }
+  :root:is([data-size], [data-dyslexia]) .lines--recipe.lines--stack .in--yield { width: calc(100% - 1.5em); }
+  :root:is([data-size], [data-dyslexia]) .lines--offers tbody tr { grid-template-areas: "use sup sup del" "item item item item" "cost cost cost cost" "size size size size" "price price upd upd"; }
+  :root:is([data-size], [data-dyslexia]) .lines--offers td:nth-child(5) :is(.in--num, select) { flex: 1 1 0; width: auto; min-width: 0; }
+  :root:is([data-size], [data-dyslexia]) table.inv tbody tr:not(.section-row) { grid-template-columns: minmax(0, 1fr); }
+  :root:is([data-size], [data-dyslexia]) table.inv td:nth-child(4) { grid-column: 1; grid-row: 3; justify-self: stretch; }
+  :root:is([data-size], [data-dyslexia]) table.inv td:nth-child(5) { grid-row: 4; }
+  :root:is([data-size], [data-dyslexia]) .count-box { display: flex; flex-wrap: wrap; }
+  :root:is([data-size], [data-dyslexia]) .count-box :is(.in--num, .count-frozen) { flex: 1 1 calc(60px * var(--box)); width: auto; min-width: 0; }
+  :root:is([data-size], [data-dyslexia]) .count-box .count-unit { flex: 1 1 auto; width: auto; }
+}
+/* Between a phone and a wide screen: the tabs get a row of their own that wraps, rather than most of them sitting out of sight. */
+@media screen and (min-width: 761px) and (max-width: 1400px) {
+  :root:is([data-size], [data-dyslexia]) .top { position: static; flex-wrap: wrap; }
+  :root:is([data-size], [data-dyslexia]) .nav { order: 9; flex: 1 1 100%; flex-wrap: wrap; overflow: visible; }
+}
+
 /* For everyone: a link in the middle of a sentence shows it's a link without relying on colour. */
 main p:not(.crumbs) a:not(.btn), .mode a, .alert a, .hint a { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; }
 .vh { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
@@ -797,3 +871,39 @@ main p:not(.crumbs) a:not(.btn), .mode a, .alert a, .hint a { text-decoration: u
 a:focus-visible, .icon:focus-visible, .linkish:focus-visible, summary:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; border-radius: 4px; }
 .nav a:focus-visible, .brand:focus-visible, .top__access:focus-visible { outline: 2px solid var(--top-ink); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; scroll-behavior: auto !important; } }
+
+/* Barback: the same pages, in blue. Colours for "up", "down" and "check" keep their meanings. */
+:root[data-project="barback"] {
+  --bg: #f1f4f8; --panel: #ffffff; --panel-2: #f6f8fb; --ink: #1b2430; --muted: #5f6b7a; --line: #dfe5ed; --field-line: #cdd6e2;
+  --brand: #1d5fa8; --brand-ink: #ffffff; --brand-soft: #e3edf8; --top: #14365f; --top-ink: #f1f5fa; --top-muted: #b4c6dc;
+  --ring: 0 0 0 3px rgba(29, 95, 168, 0.35);
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-project="barback"] {
+    --bg: #10151b; --panel: #181f27; --panel-2: #1d252e; --ink: #e7ecf2; --muted: #a0acba; --line: #2c3642; --field-line: #3a4552; --field: #202832;
+    --brand: #6fb0f0; --brand-ink: #0b1420; --brand-soft: #182c42; --top: #0c1118; --top-ink: #eef2f7; --top-muted: #93a3b6;
+    --ring: 0 0 0 3px rgba(111, 176, 240, 0.45);
+  }
+  .tag--bar { background: #182c42; color: #6fb0f0; }
+}
+/* Low vision keeps its strong contrast, with blue where the kitchen has green. */
+:root[data-project="barback"][data-lowvision] {
+  --bg: #ffffff; --panel: #ffffff; --panel-2: #f0f0f0; --ink: #000000; --muted: #262626; --line: #595959; --field-line: #000000; --field: #ffffff;
+  --brand: #003a75; --brand-ink: #ffffff; --brand-soft: #d9e6f5; --top: #00224a; --top-ink: #ffffff; --top-muted: #ffffff;
+  --ring: 0 0 0 3px #000000;
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-project="barback"][data-lowvision] {
+    --bg: #000000; --panel: #000000; --panel-2: #171717; --ink: #ffffff; --muted: #e6e6e6; --line: #a6a6a6; --field-line: #ffffff; --field: #000000;
+    --brand: #8cc8ff; --brand-ink: #000000; --brand-soft: #06264a; --top: #000000; --top-ink: #ffffff; --top-muted: #ffffff;
+    --ring: 0 0 0 3px #ffffff;
+  }
+}
+/* On a phone the switch gets its own row under the name, wide enough for a thumb. */
+@media (max-width: 760px) {
+  .top { flex-wrap: wrap; }
+  .account-switch { order: 4; flex: 1 1 100%; max-width: none; min-height: 40px; }
+  .project-switch { order: 5; flex: 1 1 100%; }
+  .project-switch button { flex: 1 1 0; justify-content: center; min-height: 40px; }
+}
+@media print { .project-switch { display: none; } }

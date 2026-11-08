@@ -10,6 +10,8 @@ The service runs at **[commisapp.ca](https://commisapp.ca)**, free for every res
 - **Supplier invoices:** drop in a PDF and it reads the lines, remembers your item names and keeps each price's history. PDFs are read in the browser and don't leave it unless you choose to send one in.
 - **Monthly inventory:** count on a phone or a printed sheet, see what it's worth, and keep a closed record of each month.
 - **Menus:** a page for each menu, with menu lists, item details and recipe cards to download in Word and Excel.
+- **Barback:** a bar's own side of the same account, in blue. Cocktails in ounces, bottles with their size and weights, and a monthly count of full bottles plus weighed opened ones. Cocktails can use the kitchen's items and preps at their prices today.
+- **People in an account:** give staff access as administrators or employees, to the kitchen, Barback or both. Employees see costs, make their own recipes and add items with an estimated price for an administrator to check. The database itself decides who can change what. Recipes can be brought from your own account into a restaurant's.
 - **Allergens:** tick what each item contains or may contain, and it adds them up through your recipes. It only knows what you enter, so always check your labels.
 
 ## Try it on your computer
@@ -29,7 +31,7 @@ This is the version with sign-ups, for several restaurants. Run `node scripts/bu
 1. **Database:** create a [Supabase](https://supabase.com) project. In its SQL Editor, paste all of `supabase/schema.sql` and run it. It's safe to run again. Each account can only reach its own rows, enforced by row level security.
 2. **Sign-ups:** in Authentication, turn on email sign-ups with "Confirm email". Set the Site URL and Redirect URLs to your address.
 3. **Email:** Supabase's built-in sender only reaches your own team, so restaurants can't sign up without your own. Any SMTP provider works. We use [Resend](https://resend.com).
-4. **Settings:** put your Project URL and publishable key in `sites/commis/config.js`. Both are safe to be public. Never put a secret key there.
+4. **Settings:** put your Project URL and publishable key in `sites/commis/config.js`. Both are safe to be public. Never put a secret key there. `barback: true` and `teams: true` there turn on Barback and people in an account; take either out to leave it off.
 5. **Your own pages:** replace the name, `sites/commis/home.html` and the legal pages in `sites/commis/pages/`. They describe the service at commisapp.ca, not yours. See `NOTICE.md`.
 
 Optional extras:

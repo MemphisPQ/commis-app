@@ -9,6 +9,8 @@
   const root = document.documentElement;
   let prefs = {};
   try { prefs = JSON.parse(localStorage.getItem(KEY) || "{}") || {}; } catch { prefs = {}; }
+  // Barback's blue from the first paint for someone signed in who was last there (app.js keeps it right from then on).
+  try { if (localStorage.getItem("commis.project") === "barback" && localStorage.getItem("costing.session")) root.setAttribute("data-project", "barback"); } catch { /* the usual look */ }
 
   function apply() {
     root.toggleAttribute("data-colorblind", !!prefs.colorblind);

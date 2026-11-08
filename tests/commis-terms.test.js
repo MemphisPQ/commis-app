@@ -71,9 +71,9 @@ test("signing up asks for the terms once, French link first, and keeps which ver
   assert.ok(app.indexOf('href="conditions.html"') < app.indexOf('href="terms.html"'), "French first");
   assert.match(app, /terms_version: TERMS_VERSION/);
   // The date of the version matches the date on the pages.
-  assert.match(app, /TERMS_VERSION = "2026-11-04"/);
-  assert.match(en, /November 4, 2026/);
-  assert.match(fr, /4 novembre 2026/);
+  assert.match(app, /TERMS_VERSION = "2026-11-07"/);
+  assert.match(en, /November 7, 2026/);
+  assert.match(fr, /7 novembre 2026/);
 });
 
 test("never sold, and a sent invoice is deleted once its reader is built, only our copy", () => {

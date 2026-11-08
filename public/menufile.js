@@ -82,17 +82,18 @@
   async function menuXlsx(menu) {
     const JSZip = await loadZip();
     const zip = new JSZip();
-    const note = `${menu.dishes.length} dishes, ${menu.preps.length} preps. Costs at today's prices, ${menu.date}.`;
+    const say = menu.say || ((s) => s);
+    const note = say(`${menu.dishes.length} dishes, ${menu.preps.length} preps. Costs at today's prices, ${menu.date}.`);
     const tabs = [
       { name: "Kitchen", xml: sheetXml({ title: menu.name, note,
-        head: ["Category", "Dish", "Menu price", "Cost / portion", "Food cost", "Target price", "Allergens", "What's in it"],
+        head: ["Category", "Dish", "Menu price", "Cost / portion", "Food cost", "Target price", "Allergens", "What's in it"].map(say),
         rows: menu.dishes.map((d) => [d.category, d.name, d.price, d.cost, d.foodCost, d.target, d.allergens, contentsText(d, true)]),
         widths: [14, 30, 11, 13, 10, 12, 36, 80], styles: [4, 4, 2, 2, 3, 2, 4, 4] }) },
-      { name: "Front of house", xml: sheetXml({ title: menu.name, note: `${menu.dishes.length} dishes.`,
-        head: ["Category", "Dish", "Price", "Allergens", "What's in it"],
+      { name: "Front of house", xml: sheetXml({ title: menu.name, note: say(`${menu.dishes.length} dishes.`),
+        head: ["Category", "Dish", "Price", "Allergens", "What's in it"].map(say),
         rows: menu.dishes.map((d) => [d.category, d.name, d.price, d.allergens, contentsText(d, false)]),
         widths: [14, 30, 10, 36, 80], styles: [4, 4, 2, 4, 4] }) },
-      { name: "Preps", xml: sheetXml({ title: menu.name, note: "The preps these dishes use (and the ones inside them).",
+      { name: "Preps", xml: sheetXml({ title: menu.name, note: say("The preps these dishes use (and the ones inside them)."),
         head: ["Prep", "Makes", "Used in"], rows: menu.preps.map((p) => [p.name, p.makes, p.usedIn.join(", ")]),
         widths: [34, 18, 70], styles: [4, 4, 4] }) },
     ];
@@ -154,16 +155,16 @@ ${tabs.map((t, k) => `<sheet name="${x(t.name)}" sheetId="${k + 1}" r:id="rId${k
    * cost, food cost and target, what's in it with amounts, and the preps.
    */
   async function menuDocx(menu, kind) {
-    const kitchen = kind === "kitchen";
+    const kitchen = kind === "kitchen", say = menu.say || ((s) => s);
     const parts = [para(run(menu.name), { style: "Title" }),
-      para(run(kitchen ? `Kitchen sheet · ${menu.dishes.length} dishes · costs at today's prices, ${menu.date}` : `${menu.dishes.length} dishes`, { grey: true, size: 10 }), { after: 200 })];
+      para(run(say(kitchen ? `${menu.say ? "Bar" : "Kitchen"} sheet · ${menu.dishes.length} dishes · costs at today's prices, ${menu.date}` : `${menu.dishes.length} dishes`), { grey: true, size: 10 }), { after: 200 })];
     for (const [cat, dishes] of byCategory(menu.dishes)) {
       parts.push(para(run(cat), { style: "Heading1" }));
       for (const d of dishes) {
         parts.push(para([run(d.name, { b: true }), run("\t" + (d.price == null ? "" : money(d.price)), { b: true })], { tabRight: true, keep: true, after: 20 }));
         const allergens = d.allergens ? para([run("Allergens: ", { b: true, size: 10 }), run(d.allergens, { size: 10 })], { keep: kitchen, after: kitchen ? 20 : 140 }) : "";
         if (kitchen) {
-          parts.push(para(run(`Cost ${money(d.cost)} · food cost ${pct(d.foodCost)} · target ${money(d.target)}`, { grey: true, size: 10 }), { keep: true, after: 20 }));
+          parts.push(para(run(say(`Cost ${money(d.cost)} · food cost ${pct(d.foodCost)} · target ${money(d.target)}`), { grey: true, size: 10 }), { keep: true, after: 20 }));
           parts.push(allergens);
           d.contents.forEach((c, k) => parts.push(para(run(`${c.amount ? c.amount + "  " : ""}${c.name}`, { size: 10 }), { list: true, after: 0, keep: k < d.contents.length - 1 })));
           parts.push(para(run(""), { after: 60 }));

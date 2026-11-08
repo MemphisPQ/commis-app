@@ -17,6 +17,12 @@
     portion: { base: "portion", f: 1, label: "portion" },
     recipe: { base: "recipe", f: 1, label: "recipe" },
     bunch: { base: "bunch", f: 1, label: "bunch" },
+    // Behind a bar (Barback). An ounce there is a fluid one, so it has its own key; a dash and a barspoon are the usual
+    // rounded amounts. A bottle's size is the item's own, in its measures. The kitchen's lists never offer these.
+    floz: { base: "L", f: 0.0295735, label: "oz", bar: true },
+    dash: { base: "L", f: 0.00092, label: "dash", bar: true },
+    barspoon: { base: "L", f: 0.005, label: "barspoon", bar: true },
+    bottle: { base: "bottle", f: 1, label: "bottle", bar: true },
   };
   const BASES = ["kg", "L", "unit", "portion", "recipe", "bunch"];
 
@@ -76,7 +82,7 @@
 
   /** Units offered in a recipe line for an ingredient stored in `base`. */
   function choicesFor(base) {
-    return Object.keys(UNITS).filter((u) => UNITS[u].base === base);
+    return Object.keys(UNITS).filter((u) => UNITS[u].base === base && !UNITS[u].bar);
   }
 
   // Counted one piece at a time.

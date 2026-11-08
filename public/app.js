@@ -13,6 +13,22 @@
   })();
   // Commis's "Buy us a soda" link (config.js), only a real https one; none means it stays hidden.
   function tipLink(u) { return typeof u === "string" && u.startsWith("https://") ? u : ""; }
+  // Barback (config.js: site.barback): a bar's own records in the same account, on these same screens, in blue. True while it's showing.
+  let BAR = false;
+  const PROJECT_KEY = "commis.project";
+  let wantedProject = (() => { try { return localStorage.getItem(PROJECT_KEY) === "barback" ? "barback" : "kitchen"; } catch { return "kitchen"; } })();
+  const say = (s) => (BAR ? Barback.say(s) : s);
+  // Whose account is showing (config.js: site.teams, schema part 20). null: your own, as it's always been. Otherwise your place in
+  // someone else's: { id, name, role, kitchen, barback, can_count }. The database enforces all of this; the screens just follow it.
+  let ACCOUNT = null;
+  let joined = [], invited = [], people = [];
+  const ACCOUNT_KEY = "commis.account";
+  let wantedAccount = (() => { try { return localStorage.getItem(ACCOUNT_KEY) || null; } catch { return null; } })();
+  const isAdmin = () => !ACCOUNT || ACCOUNT.role === "admin";
+  const isEmployee = () => !isAdmin();
+  const canCount = () => isAdmin() || !!ACCOUNT.can_count;
+  const mine = (row) => !!row && row.created_by === Store.me();
+  const estimateNote = () => `Estimated price from ${Auth.email() || "an employee"}: an administrator needs to double check it.`;
   let data = { ingredients: [], offers: [], price_history: [], recipes: [], lines: [], counts: [], closed_months: [], saved_invoices: [] };
   let coster = null;
   let lineGuess = null;       // the best guess of an invoice line's group, made fresh when items change
@@ -31,20 +47,22 @@
   const money = (n, small) => (n == null || !isFinite(n) ? "—" : "$" + n.toFixed(small && Math.abs(n) < 1 && n !== 0 ? 3 : 2));
   const pct = (n) => (n == null || !isFinite(n) ? "—" : (n * 100).toFixed(1) + "%");
   const numText = (n) => (n == null ? "" : String(+(+n).toFixed(6)));
-  const unitLabel = (u) => (u === "portion" ? "portion" : Units.UNITS[u] ? Units.UNITS[u].label : u || "");
+  const unitLabel = (u) => (BAR && u === "oz" ? "oz (weight)" : u === "portion" ? "portion" : Units.UNITS[u] ? Units.UNITS[u].label : u || "");
   // "portions", "recipes", or the unit as it is (kg, L…).
-  const plural = (u) => (u === "portion" || u === "recipe" ? u + "s" : u === "bunch" ? "bunches" : unitLabel(u));
+  const plural = (u) => (u === "portion" || u === "recipe" || u === "bottle" ? u + "s" : u === "bunch" ? "bunches" : unitLabel(u));
   const per = (u) => "/" + unitLabel(u);
   // A price box with the $ in front of it.
   const moneyInput = (attrs) => `<span class="in-money"><span class="in-money__sign" aria-hidden="true">$</span><input class="in in--num" inputmode="decimal" placeholder="0.00" ${attrs} /></span>`;
   const byName = (a, b) => a.name.localeCompare(b.name, "fr", { sensitivity: "base" });
-  const RECIPE_UNITS = ["kg", "g", "L", "ml", "unit", "dozen", "portion", "recipe", "bunch"]; // no lb/oz in recipes
-  const ALL_UNITS = Object.keys(Units.UNITS);
+  const KITCHEN_UNITS = ["kg", "g", "L", "ml", "unit", "dozen", "portion", "recipe", "bunch"]; // no lb/oz in recipes
+  const KITCHEN_PACKS = Object.keys(Units.UNITS).filter((u) => !Units.UNITS[u].bar); // the bar's own measures stay in Barback
+  let RECIPE_UNITS = KITCHEN_UNITS;
+  let ALL_UNITS = KITCHEN_PACKS;
 
   /** A short message at the bottom. `action` ({ label, run }) adds a button, such as Undo. */
   function toast(msg, bad, action) {
     const t = $("#toast");
-    t.textContent = msg;
+    t.textContent = say(msg);
     if (action) {
       const b = document.createElement("button");
       b.className = "toast__btn";
@@ -70,10 +88,10 @@
   });
   function ask(message, { ok = "OK", danger = false, input = false, placeholder = "", choices = null, list = "", value = "", optional = false } = {}) {
     const dlg = $("#ask"), field = $("#askInput");
-    $("#askText").textContent = message;
+    $("#askText").textContent = say(message);
     const buttons = choices || [{ value: "ok", label: ok, main: true }];
     $("#askActions").innerHTML = `<button class="btn" value="cancel" formnovalidate>Cancel</button>` +
-      buttons.map((b) => `<button class="btn ${b.main ? (danger ? "btn--solid-danger" : "btn--main") : ""}" value="${esc(b.value)}">${esc(b.label)}</button>`).join("");
+      buttons.map((b) => `<button class="btn ${b.main ? (danger ? "btn--solid-danger" : "btn--main") : ""}" value="${esc(b.value)}">${esc(say(b.label))}</button>`).join("");
     field.hidden = !input;
     field.value = value;
     field.placeholder = placeholder;
@@ -96,11 +114,11 @@
 
   function rebuild() {
     lineGuess = null;
-    coster = Costing.create(data);
+    coster = Costing.create(BAR ? withKitchen() : data);
     const n = data.recipes.filter((r) => coster.summary(r.id).change !== 0).length;
     const badge = $("#changeCount");
     badge.textContent = n;
-    badge.hidden = !n;
+    badge.hidden = !n || isEmployee();
     fillLists();
   }
 
@@ -108,13 +126,17 @@
     const opt = (v) => `<option value="${esc(v)}"></option>`;
     const uniq = (arr) => [...new Set(arr.filter(Boolean))].sort((a, b) => a.localeCompare(b, "fr"));
     $("#dl-items").innerHTML = data.ingredients.slice().sort(byName).map((i) => opt(i.name)).join("") +
-      data.recipes.filter((r) => r.kind === "prep").sort(byName).map((r) => opt(r.name + " (prep)")).join("");
+      data.recipes.filter((r) => r.kind === "prep").sort(byName).map((r) => opt(r.name + " (prep)")).join("") +
+      // Barback can also use what's in the kitchen.
+      (BAR ? Store.borrowed().ingredients.slice().sort(byName).map((i) => opt(`${i.name} (${SITE.name})`)).join("") +
+        Store.borrowed().recipes.filter((r) => r.kind === "prep").sort(byName).map((r) => opt(`${r.name} (${SITE.name} prep)`)).join("") : "");
     $("#dl-ingredients").innerHTML = data.ingredients.slice().sort(byName).map((i) => opt(i.name)).join("");
     $("#dl-preps").innerHTML = data.recipes.filter((r) => r.kind === "prep").sort(byName).concat(data.recipes.filter((r) => r.kind === "dish").sort(byName)).map((r) => opt(r.name)).join("");
     $("#dl-suppliers").innerHTML = uniq(data.offers.map((o) => o.supplier)).map(opt).join("");
     $("#dl-categories").innerHTML = categoryNames("ingredients").map(opt).join("");
     $("#dl-menus").innerHTML = uniq(data.recipes.filter((r) => r.kind === "dish").map((r) => r.menu)).map(opt).join("");
     $("#dl-dish-cats").innerHTML = categoryNames("dishes").map(opt).join("");
+    $("#dl-bottle-sizes").innerHTML = Barback.BOTTLE_SIZES.map(opt).join("");
   }
 
   /* ---------- suggestions while typing ---------- */
@@ -287,32 +309,46 @@
 
   /* ---------- writing ---------- */
   async function write(fn) {
+    write.busy = (write.busy || 0) + 1; // switching to the other records waits for this
     try {
-      await fn();
-    } catch (e) {
-      write.failed = true; // the change listener keeps the draft, so "Put it back" can retry it
-      toast(e.message || String(e), true);
-      // Whatever the store has is the truth: reload it so the screen doesn't show unsaved changes.
-      data = await store.loadAll();
-    }
+      try {
+        await fn();
+      } catch (e) {
+        write.failed = true; // the change listener keeps the draft, so "Put it back" can retry it
+        toast(e.message || String(e), true);
+        // Whatever the store has is the truth: reload it so the screen doesn't show unsaved changes.
+        data = await store.loadAll();
+      }
+    } finally { write.busy--; }
     rebuild();
     render();
   }
-  const get = (table, id) => data[table].find((r) => r.id === id);
+  // In Barback, a kitchen item or prep can be looked up too (a cocktail uses it); it can't be changed from here.
+  const get = (table, id) => data[table].find((r) => r.id === id) || (BAR ? (Store.borrowed()[table] || []).find((r) => r.id === id) : undefined);
+  const fromKitchen = (table, id) => BAR && !data[table].some((r) => r.id === id) && (Store.borrowed()[table] || []).some((r) => r.id === id);
 
+  /** Who made a new row. What an employee adds to a restaurant's list is flagged, and stays theirs to correct until it's checked. */
+  function stamp(table, row) {
+    if (Store.part20Old() || (table !== "ingredients" && table !== "recipes")) return row;
+    const out = { ...row, created_by: isEmployee() ? Store.me() : row.created_by || Store.me() };
+    if (isEmployee() && table === "ingredients") Object.assign(out, { needs_check: true, review: estimateNote(), in_inventory: false, locked_price: null, locked_at: null });
+    return out;
+  }
   async function insert(table, row) {
-    const r = Store.shape(table, row);
+    const r = Store.shape(table, stamp(table, row));
     data[table].push(r);
     await store.insert(table, r);
     return r;
   }
   async function patch(table, id, changes) {
-    const row = get(table, id);
+    if (fromKitchen(table, id)) throw new Error(`That belongs to ${SITE.name}: open it there to change it.`);
+    // From the kitchen, a merge also moves the Barback lines that use what it's merging.
+    const row = get(table, id) || (Store.borrowed()[table] || []).find((r) => r.id === id);
     if (row) Object.assign(row, changes);
     await store.update(table, id, changes);
   }
   async function removeRows(table, ids) {
-    const set = new Set([].concat(ids));
+    const set = new Set([].concat(ids).filter((id) => !fromKitchen(table, id)));
     data[table] = data[table].filter((r) => !set.has(r.id));
     if (set.size) await store.remove(table, [...set]);
   }
@@ -331,7 +367,8 @@
   /* ---------- failsafes: drafts and recently deleted ---------- */
   // Everything typed is copied to this device as you type. A copy is dropped once that field has saved;
   // if the save failed, or the page closed first, the page offers to put it back.
-  const DRAFTS = "costing.drafts", TRASH = "costing.trash";
+  const DRAFTS = "costing.drafts";
+  let TRASH = "costing.trash"; // each set of records has its own (see applyProject)
   const readJSON = (k, d) => { try { const v = JSON.parse(localStorage.getItem(k) || "null"); return v == null ? d : v; } catch { return d; } };
   const writeJSON = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* storage full or blocked */ } };
   const draftable = (el) => el && el.dataset && el.dataset.k && el.dataset.act && el.dataset.act !== "add-line" && el.matches("input:not([type=checkbox]):not([type=radio]):not([type=file]), textarea, select");
@@ -388,7 +425,7 @@
   async function restoreFromTrash(entryId) {
     const entry = readJSON(TRASH, []).find((x) => x.id === entryId);
     if (!entry) return;
-    const has = (t, id) => data[t].some((r) => r.id === id);
+    const has = (t, id) => !!get(t, id);
     write.failed = false;
     if (entry.kind === "merge") {
       const recipe = entry.rows.recipes && entry.rows.recipes[0];
@@ -429,7 +466,7 @@
   async function mergeIngredient(from, into) {
     const offers = data.offers.filter((o) => o.ingredient_id === from.id).map((o) => o.id);
     const history = data.price_history.filter((h) => h.ingredient_id === from.id).map((h) => h.id);
-    const lines = data.lines.filter((l) => l.ingredient_id === from.id).map((l) => ({ id: l.id, unit: l.unit }));
+    const lines = [...data.lines.filter((l) => l.ingredient_id === from.id), ...barLines("ingredient_id", from.id)].map((l) => ({ id: l.id, unit: l.unit }));
     const counts = data.counts.filter((c) => c.ingredient_id === from.id).map((c) => ({ ...c }));
     // A copy with no price of its own was a placeholder: its quantities were meant in the real item's unit.
     const adoptUnit = !offers.length && from.base !== into.base;
@@ -462,7 +499,7 @@
     await insert("ingredients", { ...from, preferred_offer_id: null });
     for (const id of x.offers) if (get("offers", id)) await patch("offers", id, { ingredient_id: from.id });
     for (const id of x.history) if (get("price_history", id)) await patch("price_history", id, { ingredient_id: from.id });
-    for (const l of x.lines) if (get("lines", l.id)) await patch("lines", l.id, { ingredient_id: from.id, unit: l.unit });
+    for (const l of x.lines) if (lineThere(l.id)) await patch("lines", l.id, { ingredient_id: from.id, unit: l.unit });
     for (const c of x.counts) {
       if (get("counts", c.id)) { await patch("counts", c.id, { ingredient_id: from.id }); continue; }
       const there = data.counts.find((d) => d.month === c.month && d.ingredient_id === x.into);
@@ -487,7 +524,7 @@
   /** Puts one recipe in place of another everywhere (recipe lines, "Made in-house" links, monthly counts),
    * keeping the amounts, fills in card text the kept one is missing, then removes the other one. */
   async function mergeRecipe(from, into) {
-    const lines = data.lines.filter((l) => l.sub_recipe_id === from.id).map((l) => l.id);
+    const lines = [...data.lines.filter((l) => l.sub_recipe_id === from.id), ...barLines("sub_recipe_id", from.id)].map((l) => l.id);
     const links = data.ingredients.filter((i) => i.prep_id === from.id).map((i) => i.id);
     const own = data.lines.filter((l) => l.recipe_id === from.id).map((l) => ({ ...l }));
     const fill = {};
@@ -524,7 +561,7 @@
       if (get("lines", l.id) || !(l.ingredient_id ? get("ingredients", l.ingredient_id) : get("recipes", l.sub_recipe_id))) continue;
       await insert("lines", { ...l, offer_id: l.offer_id && get("offers", l.offer_id) ? l.offer_id : null });
     }
-    for (const id of x.lines) if (get("lines", id)) await patch("lines", id, { sub_recipe_id: from.id });
+    for (const id of x.lines) if (lineThere(id)) await patch("lines", id, { sub_recipe_id: from.id });
     for (const id of x.links) if (get("ingredients", id)) await patch("ingredients", id, { prep_id: from.id });
     for (const c of x.counts) {
       if (get("counts", c.row.id)) { await patch("counts", c.row.id, Store.part16Old() ? { recipe_id: from.id, qty: c.row.qty } : { recipe_id: from.id, qty: c.row.qty, unit: c.row.unit || null }); continue; }
@@ -533,6 +570,328 @@
       await insert("counts", c.row);
     }
     if (Object.keys(x.before).length && get("recipes", x.into)) await patch("recipes", x.into, x.before);
+  }
+
+  /* ---------- Barback: the same screens, with a bar's own records ---------- */
+  const BAR_NAV = { dishes: ["Cocktails", "M5 4h14l-7 8ZM12 12v8M8 20h8"], ingredients: ["Bottles", "M10 3h4v4l2 3v10a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V10l2-3V3ZM8 13h8"], inventory: ["Count"] };
+  const TAB_COLOUR = { light: ["#1b4537", "#14365f"], dark: ["#0f1312", "#0c1118"] };
+
+  /** Everything that follows which set of records is showing. The store has the final say: without part 19 it stays on the kitchen. */
+  function applyProject() {
+    const was = BAR;
+    BAR = Store.project() === "barback";
+    if (BAR) document.documentElement.setAttribute("data-project", "barback"); else document.documentElement.removeAttribute("data-project");
+    RECIPE_UNITS = BAR ? Barback.RECIPE_UNITS : KITCHEN_UNITS;
+    ALL_UNITS = BAR ? Barback.PACK_UNITS : KITCHEN_PACKS;
+    // What's deleted, and invoices being worked on, stay with the records they came from.
+    const whose = ACCOUNT ? "." + ACCOUNT.id : "";
+    TRASH = (BAR ? "costing.trash.barback" : "costing.trash") + whose;
+    const keyWas = INV_KEY;
+    INV_KEY = (BAR ? "costing.invoiceWork.barback" : "costing.invoiceWork") + whose;
+    if (was !== BAR || keyWas !== INV_KEY) invoiceWork = readJSON(INV_KEY, []);
+    $(".brand__name").textContent = BAR ? "Barback" : SITE.name;
+    $(".brand__sub").textContent = (ACCOUNT && ACCOUNT.name) || (SITE.commis && Auth.signedIn() && Auth.restaurant()) || (BAR ? "Cocktails & liquor" : SITE.sub);
+    document.title = BAR ? "Barback" : SITE.app;
+    document.querySelectorAll(".nav a[data-nav]").forEach((a) => {
+      const long = a.querySelector(".nav__long"), short = a.querySelector(".nav__short"), path = a.querySelector("path");
+      if (!a.dataset.long) { a.dataset.long = long.textContent; a.dataset.short = short.textContent; a.dataset.path = path.getAttribute("d"); }
+      const bar = BAR && BAR_NAV[a.dataset.nav];
+      long.textContent = bar ? bar[0] : a.dataset.long;
+      short.textContent = bar ? bar[0] : a.dataset.short;
+      path.setAttribute("d", (bar && bar[1]) || a.dataset.path);
+    });
+    for (const [scheme, colours] of Object.entries(TAB_COLOUR)) {
+      const tag = document.querySelector(`meta[name="theme-color"][media*="${scheme}"]`);
+      if (tag) tag.content = colours[BAR ? 1 : 0];
+    }
+    const icon = document.querySelector('link[rel="icon"]');
+    if (icon) icon.setAttribute("href", BAR ? "favicon-barback.svg" : "favicon.svg");
+    const box = $("#projectSwitch");
+    // Only the sides this person has here. With one, there's nothing to switch.
+    box.hidden = !Store.barbackReady() || (!!ACCOUNT && !(ACCOUNT.kitchen && ACCOUNT.barback));
+    box.querySelector('[data-project="kitchen"]').textContent = SITE.name;
+    box.querySelectorAll("[data-project]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.project === Store.project())));
+    // What an employee doesn't use: invoices and price changes are for administrators, the count for those with inventory access.
+    document.querySelectorAll(".nav a[data-nav]").forEach((a) => { a.hidden = isEmployee() && (a.dataset.nav === "invoices" || a.dataset.nav === "changes" || (a.dataset.nav === "inventory" && !canCount())); });
+    const pick = $("#accountSwitch");
+    pick.hidden = !joined.length;
+    pick.innerHTML = joined.length ? `<option value="${esc(Store.me())}">My account</option>` + joined.map((m) => `<option value="${esc(m.account_id)}">${esc(m.account_name || "A restaurant")} · ${m.role === "admin" ? "Administrator" : "Employee"}</option>`).join("") : "";
+    if (joined.length) pick.value = Store.account();
+    showInvites();
+  }
+
+  /** Which account to show: the one asked for if you're still in it, else your own. Which side: the one asked for if you have it. */
+  function chooseAccount(team) {
+    joined = team.joined; invited = team.invited;
+    const m = joined.find((x) => x.account_id === wantedAccount);
+    ACCOUNT = m ? { id: m.account_id, name: m.account_name, role: m.role, kitchen: m.kitchen, barback: m.barback, can_count: m.can_count, email: m.email } : null;
+    if (Store.teamsReady()) Store.setAccount(ACCOUNT ? ACCOUNT.id : Store.me());
+    if (!ACCOUNT) return wantedProject;
+    if (wantedProject === "barback" && !ACCOUNT.barback) return "kitchen";
+    if (wantedProject === "kitchen" && !ACCOUNT.kitchen) return "barback";
+    return wantedProject;
+  }
+
+  /* ---------- what an employee can do here ---------- */
+  const EMPLOYEE_PAGES = new Set(["dishes", "preps", "recipe", "ingredients", "ingredient", "menu", "settings", "bring"]);
+  const pageAllowed = (page) => !isEmployee() || EMPLOYEE_PAGES.has(page) || (page === "inventory" && canCount());
+  const ALWAYS_OK = new Set(["draft-restore", "draft-discard", "dish-group", "hist-period", "sign-out", "back-to", "new-recipe", "duplicate", "new-ingredient", "open-in-kitchen", "inv-print", "leave-account", "bring-from", "bring-pick", "bring-go"]);
+  const COUNTING = new Set(["count", "count-open", "count-unit", "count-containers", "count-same"]);
+  const OWN_RECIPE = new Set(["recipe-field", "dish-cat", "dish-menu", "measure", "measure-costper", "container", "add-line", "line-field", "delete-line", "delete-recipe", "ack", "recipe-checked", "scale-open", "scale-pick", "scale-qty", "scale-unit", "scale-close", "scale-save", "scale-clear", "download-card", "save-card", "lock", "unlock", "lock-field"]);
+  const OWN_ITEM = new Set(["ing-field", "allergen", "offer-field", "prefer", "add-offer", "delete-offer", "delete-ingredient", "measure", "container", "bottle-field"]);
+  function employeeMay(act, el) {
+    if (ALWAYS_OK.has(act)) return true;
+    if (COUNTING.has(act)) return canCount();
+    const r = route();
+    if (r.page === "recipe") return OWN_RECIPE.has(act) && mine(get("recipes", r.id));
+    if (r.page === "ingredient") { const i = get("ingredients", r.id); return OWN_ITEM.has(act) && mine(i) && !!i.needs_check; }
+    if (act === "dish-cat" || act === "dish-menu") return mine(get("recipes", el.dataset.id));
+    return false;
+  }
+  /** Over a drawn page: what this employee can't do is greyed out or gone. */
+  function lockDown() {
+    main.querySelectorAll("[data-act]").forEach((el) => {
+      if (employeeMay(el.dataset.act, el)) return;
+      if (el.matches("input, select, textarea")) el.disabled = true; else el.hidden = true;
+    });
+    const r = route();
+    if (r.page !== "recipe" || !mine(get("recipes", r.id))) main.querySelectorAll("[data-drag-line]").forEach((el) => { el.hidden = true; });
+    // Buttons to pages they can't open (the count's summary, a month's invoices) go too.
+    main.querySelectorAll('a[href^="#/"]').forEach((a) => { const page = a.getAttribute("href").slice(2).split("/")[0]; if (page && !pageAllowed(page)) a.hidden = true; });
+  }
+
+  /* ---------- people in an account ---------- */
+  function showInvites() {
+    const box = $("#invites");
+    box.hidden = !invited.length;
+    box.innerHTML = invited.map((m) => `<div class="invite"><span><strong>${esc(m.account_name || "A restaurant")}</strong> gave you access as ${m.role === "admin" ? "an administrator" : "an employee"}. Your own account stays as it is.</span>
+      <span class="invite__buttons"><button class="btn btn--small btn--main" type="button" data-invite="accept" data-account="${esc(m.account_id)}">Accept</button>
+      <button class="btn btn--small" type="button" data-invite="decline" data-account="${esc(m.account_id)}" data-email="${esc(m.email)}">No thanks</button></span></div>`).join("");
+  }
+  async function answerInvite(b) {
+    try {
+      if (b.dataset.invite === "accept") {
+        await store.acceptInvite(b.dataset.account);
+        await goTo(b.dataset.account);
+        toast(`You're in. The list at the top goes back to your own account, which stays as it was.`);
+      } else {
+        await store.removePerson(b.dataset.account, b.dataset.email);
+        await start();
+      }
+    } catch (e) { toast(e.message, true); }
+  }
+  /** Over to another account (or back to my own). */
+  async function goTo(id) {
+    if (switching) return;
+    switching = true;
+    wantedAccount = id === Store.me() ? null : id;
+    try { if (wantedAccount) localStorage.setItem(ACCOUNT_KEY, wantedAccount); else localStorage.removeItem(ACCOUNT_KEY); } catch { /* this visit only */ }
+    await goOver();
+  }
+  const accessWords = (m) => [m.kitchen && SITE.name, m.barback && Store.barbackReady() && "Barback", m.role !== "admin" && m.can_count && "inventory"].filter(Boolean).join(", ");
+
+  /** Administrators: who's in this account, and letting someone new in. */
+  function peopleCard() {
+    if (!Store.teamsReady() || !isAdmin()) return "";
+    const bar = Store.barbackReady();
+    const tick = (m, field, label, on, off = false) => `<label class="check"><input type="checkbox" data-k="p-${field}-${esc(m.email)}" data-act="person-field" data-field="${field}" data-email="${esc(m.email)}" ${on ? "checked" : ""} ${off ? "disabled" : ""} /> ${label}</label>`;
+    const rows = people.map((m) => `<tr>
+      <td><strong>${esc(m.email)}</strong><div class="muted small">${m.user_id ? "Joined" : "Waiting for them to sign in with this email"}</div></td>
+      <td><select class="in" data-k="p-role-${esc(m.email)}" data-act="person-field" data-field="role" data-email="${esc(m.email)}" aria-label="Role of ${esc(m.email)}">
+        <option value="employee"${m.role === "employee" ? " selected" : ""}>Employee</option><option value="admin"${m.role === "admin" ? " selected" : ""}>Administrator</option></select></td>
+      <td class="people__access">${tick(m, "kitchen", esc(SITE.name), m.kitchen)}${bar ? tick(m, "barback", "Barback", m.barback) : ""}${tick(m, "can_count", "Inventory", m.role === "admin" || m.can_count, m.role === "admin")}</td>
+      <td><button class="icon icon--x" data-act="person-remove" data-email="${esc(m.email)}" aria-label="Remove ${esc(m.email)}">×</button></td></tr>`).join("");
+    return `<section class="card">
+      <h2>People in this account</h2>
+      <p><strong>Administrators</strong> can change anything on the sides they have, and give people access. <strong>Employees</strong> can see prices and costs, make and change their own recipes, and add new items with an estimated price for an administrator to double check. Tick <strong>Inventory</strong> to let an employee do the count.</p>
+      ${rows ? `<div class="table-wrap"><table class="list people"><thead><tr><th>Who</th><th>Role</th><th>Access</th><th><span class="vh">Remove</span></th></tr></thead><tbody>${rows}</tbody></table></div>` : ""}
+      <div class="people__add">
+        <label class="block">Their email<input class="in" type="email" id="inviteEmail" autocomplete="off" placeholder="name@example.com" /></label>
+        <label class="block">Role<select class="in" id="inviteRole"><option value="employee">Employee</option><option value="admin">Administrator</option></select></label>
+        <div class="people__access"><label class="check"><input type="checkbox" id="inviteKitchen" checked /> ${esc(SITE.name)}</label>${bar ? `<label class="check"><input type="checkbox" id="inviteBarback" /> Barback</label>` : ""}<label class="check"><input type="checkbox" id="inviteCount" /> Inventory</label></div>
+        <button class="btn btn--main" data-act="person-invite">Give access</button>
+      </div>
+      <p class="hint">We don't send an email, so let them know. They'll see it when they sign in or sign up with that address, and their own account stays separate. What they make here stays here if they leave.</p>
+    </section>`;
+  }
+  /** Someone in another person's account: where they stand, and leaving. */
+  function myPlaceCard() {
+    if (!ACCOUNT) return "";
+    return `<section class="card">
+      <h2>${esc(ACCOUNT.name || "This account")}</h2>
+      <p>You're here as ${ACCOUNT.role === "admin" ? "an administrator" : "an employee"}, with access to ${esc(accessWords(ACCOUNT))}. Your own account is separate: the list at the top goes back to it. Whatever you make here stays here.</p>
+      <button class="btn btn--danger" data-act="leave-account">Leave this account</button>
+    </section>`;
+  }
+
+  /* ---------- bringing recipes in from another account ---------- */
+  const bring = { from: null, rows: null, recipes: new Set(), items: new Set() };
+  const bringSources = () => (Store.teamsReady() ? Transfer.sources(joined, Store.me(), Store.account()) : []);
+  const bringLink = () => (bringSources().length ? `<a class="btn" href="#/bring">Import from…</a>` : "");
+  function bringPage() {
+    const list = bringSources();
+    const back = `<p class="crumbs"><a href="#/dishes">← Dishes</a></p>`;
+    if (!list.length) return back + `<h1>Import</h1><p class="muted">There's nothing you can import from here. You can always bring your own account's recipes into a restaurant's. Taking a restaurant's out takes being its administrator.</p>`;
+    const name = (s) => (s.own ? "My account" : s.name || "A restaurant");
+    const side = Store.project();
+    const picker = `<label class="block">Import from <select class="in" data-k="bring-from" data-act="bring-from"><option value="">Pick one…</option>${list.map((s) => `<option value="${esc(s.id)}"${bring.from === s.id ? " selected" : ""}>${esc(name(s))}</option>`).join("")}</select></label>`;
+    if (!bring.rows) return back + `<h1>Import</h1><section class="card card--flat">${picker}</section>`;
+    const onSide = (r) => (r.project || "kitchen") === side;
+    const row = (x, kind, what) => `<tr data-search="${esc(x.name.toLowerCase())}"><td><label class="check"><input type="checkbox" data-k="bp-${esc(x.id)}" data-act="bring-pick" data-kind="${kind}" data-id="${esc(x.id)}" ${bring[kind].has(x.id) ? "checked" : ""} /> ${esc(x.name)}</label></td><td class="muted">${what}</td></tr>`;
+    const dishes = bring.rows.recipes.filter((r) => onSide(r) && r.kind === "dish").sort(byName), preps = bring.rows.recipes.filter((r) => onSide(r) && r.kind === "prep").sort(byName), items = bring.rows.ingredients.filter(onSide).sort(byName);
+    const n = bring.recipes.size + bring.items.size;
+    return `${back}
+      <div class="bar"><h1>Import</h1><button class="btn btn--main" data-act="bring-go" ${n ? "" : "disabled"}>Import ${n || ""} into ${esc(ACCOUNT ? ACCOUNT.name || "this account" : "my account")}</button></div>
+      <section class="card card--flat">${picker}
+        <p class="hint">Copies, so the original stays as it is. A recipe brings along what it needs: its preps and items. An item or prep with the same name that's already here is used instead. ${isEmployee() ? "New items keep their price as an estimate, flagged for an administrator to double check." : ""}</p></section>
+      <div class="filters"><input type="search" placeholder="Search" data-filter aria-label="Search" /></div>
+      <div class="table-wrap"><table class="list cards"><thead><tr><th>Name</th><th>Kind</th></tr></thead><tbody>
+        ${dishes.map((x) => row(x, "recipes", "dish")).join("")}${preps.map((x) => row(x, "recipes", "prep")).join("")}${items.map((x) => row(x, "items", "ingredient")).join("") || ""}
+        ${dishes.length + preps.length + items.length ? "" : `<tr><td colspan="2" class="muted">Nothing there on this side yet.</td></tr>`}
+      </tbody></table></div>`;
+  }
+
+  /** Over to the other records. `then`: the page to open there (else the same page, when there's one on both sides). */
+  let switching = false;
+  async function switchProject(name, then) {
+    if (switching || name === Store.project()) return;
+    switching = true;
+    wantedProject = name;
+    try { localStorage.setItem(PROJECT_KEY, name); } catch { /* this visit only */ }
+    await goOver(then);
+  }
+  /** The other records, or someone else's account: wait for saves, then draw everything again from there. */
+  async function goOver(then) {
+    // Anything still saving goes in the records it was typed for.
+    for (let k = 0; k < 100 && write.busy; k++) await new Promise((r) => setTimeout(r, 50));
+    listFilters.clear(); cameFrom.clear(); scrolled.clear();
+    bring.from = null; bring.rows = null; bring.recipes.clear(); bring.items.clear();
+    main.setAttribute("aria-busy", "true");
+    const page = route().page, onBoth = ["dishes", "preps", "ingredients", "inventory", "invoices", "changes", "settings"];
+    const to = then || (onBoth.includes(page) ? null : page === "ingredient" ? "#/ingredients" : page === "summary" || page === "spending" ? "#/inventory" : "#/dishes");
+    if (to && to !== location.hash) location.hash = to;
+    try { await start(); }
+    finally { main.removeAttribute("aria-busy"); switching = false; }
+    window.scrollTo(0, 0);
+    backupToDrive(false);
+  }
+
+  /** The kitchen's words become the bar's, over a page once it's drawn. Names and what's typed stay as they are. */
+  function sayAll(el) {
+    const leave = 'a[href^="#/recipe/"], a[href^="#/ingredient/"], textarea, option:not([value])';
+    const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+      if (!/[A-Za-z×]/.test(n.nodeValue) || n.parentElement.closest(leave)) continue;
+      const s = Barback.say(n.nodeValue);
+      if (s !== n.nodeValue) n.nodeValue = s;
+    }
+    el.querySelectorAll("[placeholder], [aria-label], [title]").forEach((x) => {
+      for (const a of ["placeholder", "aria-label", "title"]) {
+        const v = x.getAttribute(a);
+        if (v && !x.closest('a[href^="#/recipe/"], a[href^="#/ingredient/"]')) { const s = Barback.say(v); if (s !== v) x.setAttribute(a, s); }
+      }
+    });
+  }
+
+  /** What Barback's costs are worked out from: its own rows and the kitchen's, so a kitchen price moves a cocktail's cost. */
+  function withKitchen() {
+    const k = Store.borrowed();
+    return { ingredients: [...data.ingredients, ...k.ingredients], offers: [...data.offers, ...k.offers], recipes: [...data.recipes, ...k.recipes], lines: [...data.lines, ...k.lines] };
+  }
+  // From the kitchen: the Barback lines that use something of the kitchen's, and the cocktails or preps they're in.
+  const barLines = (field, id) => (BAR ? [] : Store.borrowed().lines.filter((l) => l[field] === id));
+  const barUses = (field, id) => [...new Set(barLines(field, id).map((l) => l.recipe_id))].map((rid) => Store.borrowed().recipes.find((r) => r.id === rid)).filter(Boolean).sort(byName);
+  const lineThere = (id) => get("lines", id) || Store.borrowed().lines.find((l) => l.id === id);
+  const barTag = `<span class="tag tag--bar">Barback</span>`;
+  const estimatedTag = `<span class="tag tag--est" title="An estimated price, waiting for an administrator to double check it">estimated</span>`;
+  const kitchenTag = () => `<span class="tag tag--kitchen">${esc(SITE.name)}</span>`;
+
+  /** What's typed on a cocktail line, found in the kitchen: "Lime (Commis)", "Syrup (Commis prep)", or a plain name that's only there. */
+  function kitchenPick(text) {
+    const k = Store.borrowed(), lower = text.trim().toLowerCase();
+    const asItem = ` (${SITE.name})`.toLowerCase(), asPrep = ` (${SITE.name} prep)`.toLowerCase();
+    const named = (list, name) => list.find((x) => x.name.toLowerCase() === name);
+    const preps = k.recipes.filter((r) => r.kind === "prep");
+    if (lower.endsWith(asPrep)) return { sub: named(preps, lower.slice(0, -asPrep.length)) };
+    if (lower.endsWith(asItem)) return { ing: named(k.ingredients, lower.slice(0, -asItem.length)) };
+    const ing = named(k.ingredients, lower);
+    return ing ? { ing } : { sub: named(preps, lower) };
+  }
+
+  /** A kitchen item or prep, seen from Barback: read only, with a way over to it. */
+  function kitchenPage(isPrep, x, from) {
+    const offer = isPrep ? null : coster.defaultOffer(x.id);
+    const price = isPrep ? coster.recipeCost(x.id).perYield : offer ? offer.price : null, unit = isPrep ? x.yield_unit : x.base;
+    const field = isPrep ? "sub_recipe_id" : "ingredient_id";
+    const users = [...new Set(data.lines.filter((l) => l[field] === x.id).map((l) => l.recipe_id))].map((id) => data.recipes.find((r) => r.id === id)).filter(Boolean).sort(byName);
+    return `
+      <p class="crumbs"><a href="#/${isPrep ? "preps" : "ingredients"}">← ${isPrep ? "Preps" : "Ingredients"}</a>${backLink(from)}</p>
+      <div class="bar">
+        <h1>${esc(x.name)} ${kitchenTag()}</h1>
+        <button class="btn" data-act="open-in-kitchen" data-page="${isPrep ? "recipe" : "ingredient"}" data-id="${esc(x.id)}">Open in ${esc(SITE.name)}</button>
+      </div>
+      <section class="card card--flat">
+        <p><strong>${price == null ? "No price yet" : money(price, true) + per(unit)}</strong>${offer && offer.offer.supplier ? ` · ${esc(offer.offer.supplier)}` : ""}</p>
+        <p class="hint">This lives in ${esc(SITE.name)}, so Barback only reads it. When its price changes there, every cocktail using it follows. To change it, open it in ${esc(SITE.name)}.</p>
+      </section>
+      <h2>Used in (${users.length})</h2>
+      ${users.length ? `<ul class="plain">${users.map((r) => `<li><a href="#/recipe/${encodeURIComponent(r.id)}">${esc(r.name)}</a> <span class="tag">${r.kind}</span></li>`).join("")}</ul>` : `<p class="muted">Nothing in Barback uses it yet.</p>`}`;
+  }
+
+  /** On Barback's lists: what can also be used from the kitchen, out of the way until you want it. */
+  function kitchenFold(isPrep) {
+    if (!BAR) return "";
+    const k = Store.borrowed(), list = (isPrep ? k.recipes.filter((r) => r.kind === "prep") : k.ingredients).slice().sort(byName);
+    if (!list.length) return "";
+    const key = isPrep ? "kitchen-preps" : "kitchen-items";
+    const row = (x) => {
+      const price = isPrep ? coster.recipeCost(x.id).perYield : (coster.defaultOffer(x.id) || {}).price;
+      return `<li><a href="#/${isPrep ? "recipe" : "ingredient"}/${encodeURIComponent(x.id)}">${esc(x.name)}</a> <span class="muted small nowrap">${price == null ? "no price" : money(price, true) + per(isPrep ? x.yield_unit : x.base)}</span></li>`;
+    };
+    return `<section class="card card--flat kitchen-fold"><details class="fold" data-k="${key}"${detailsOpen.get(key) ? " open" : ""}>
+      <summary><h2>From ${esc(SITE.name)}</h2><span class="small muted">${list.length} ${isPrep ? "preps" : "items"} your cocktails can use</span></summary>
+      <p class="hint">Read only. Type one's name on a cocktail and it uses ${esc(SITE.name)}'s price, today's and any later one.</p>
+      <ul class="plain kitchen-fold__list">${list.map(row).join("")}</ul>
+    </details></section>`;
+  }
+
+  /** What a bottle and an ounce of it cost, under the price per litre. */
+  function pourLine(i, perLitre) {
+    if (i.base !== "L") return "";
+    const ml = Barback.bottleMl(i), p = Barback.pours(perLitre, ml);
+    return `<div class="muted small">${p.bottle != null ? money(p.bottle) + " a bottle · " : ""}${money(p.oz, true)}/oz</div>`;
+  }
+
+  /** A bottle's size, and what it weighs empty and full so opened ones can go on the scale. */
+  function bottleCard(i) {
+    const ml = Barback.bottleMl(i), def = coster.defaultOffer(i.id), empty = parseNum(i.empty_g), full = parseNum(i.full_g);
+    const box = (field, label, value, unit, more = "") => `<label>${label} <span class="bottle__box"><input class="in in--num" inputmode="decimal" ${more} data-k="b-${field}" data-act="bottle-field" data-field="${field}" data-id="${esc(i.id)}" value="${esc(numText(value))}" aria-label="${label}, in ${unit}" /> ${unit}</span></label>`;
+    const p = def && ml ? Barback.pours(def.price, ml) : null;
+    return `<section class="card card--flat bottle">
+      <h2>The bottle</h2>
+      <div class="bottle__boxes">
+        ${box("size", "Size", ml, "ml", `list="dl-bottle-sizes" data-suggest-all`)}
+        ${box("empty_g", "Empty", empty, "g")}
+        ${box("full_g", "Full", full, "g")}
+      </div>
+      ${p ? `<p class="bottle__price"><strong>${money(p.bottle)}</strong> a bottle · <strong>${money(p.oz, true)}</strong>/oz</p>` : ""}
+      ${empty && full && full <= empty ? `<p class="note note--bad">Full has to be heavier than empty.</p>` : ""}
+      <p class="hint">The size lets you count it in bottles. Weigh an empty one and a full one once, with the pourer you use, and on the count you can count the full bottles and weigh the opened ones.</p>
+    </section>`;
+  }
+
+  /** The first price the size of one bottle gives a bottle its size, and the size follows that price while it was the same. */
+  async function sizeBottle(ingId, qty, unit, was = null) {
+    const i = BAR && get("ingredients", ingId);
+    if (!i || i.base !== "L" || fromKitchen("ingredients", ingId)) return;
+    const now = Barback.bottleMl(i), ml = Barback.sizeFromPack(qty, unit);
+    if (ml && ml !== now && (now == null || now === was)) await patch("ingredients", i.id, { measures: Barback.withBottleSize(i, ml) });
+  }
+
+  /** Beside a bottle's full count on the inventory: what its opened bottles weigh. */
+  function openBox(r, month) {
+    const i = r.item;
+    return `<span class="count-tare count-open">+ <input class="in in--open" data-k="cnt-o-${i.id}" data-act="count-open" data-id="${esc(i.id)}" data-month="${month}" value="${esc(r.openG)}" aria-label="What the opened bottles of ${esc(i.name)} weigh, in grams. Two opened: 840+700" /> g opened${r.openG && r.qty != null ? ` = <strong>${esc(numText(+r.qty.toFixed(2)))} bottles</strong>` : ""}</span>`;
   }
 
   /* ---------- routing ---------- */
@@ -574,9 +933,11 @@
     if (render.samePage && render.samePage !== location.hash && render.lastKey) scrolled.set(render.lastKey, scroll);
     const views = { dishes: () => recipeList("dish"), preps: () => recipeList("prep"), recipe: () => recipePage(r.id), ingredients: ingredientList,
       ingredient: () => ingredientPage(r.id), inventory: () => inventoryPage(r.id), summary: () => summaryPage(r.id), spending: () => spendingPage(r.id), invoices: invoicesPage, changes: changesPage, settings: settingsPage,
-      menu: () => menuPage(r.id),
+      menu: () => menuPage(r.id), bring: bringPage,
       ...(SITE.commis ? {} : { import: importPage }) };
-    main.innerHTML = (views[r.page] || views.dishes)();
+    main.innerHTML = ((pageAllowed(r.page) && views[r.page]) || views.dishes)();
+    if (isEmployee()) lockDown();
+    if (BAR) sayAll(main);
     if (focusKey) {
       let el = main.querySelector(`[data-k="${CSS.escape(focusKey)}"]`);
       // After Enter: if the save filled in the box it was going to (an invoice line's pack), look again from there.
@@ -752,7 +1113,7 @@
     return `
       <div class="bar">
         <h1>${isDish ? "Dishes" : "Preps"} <span class="muted small">(<span data-count>${list.length}</span>)</span></h1>
-        <button class="btn btn--main" data-act="new-recipe" data-kind="${kind}">+ New ${isDish ? "dish" : "prep"}</button>
+        <div class="actions" style="margin:0">${bringLink()}<button class="btn btn--main" data-act="new-recipe" data-kind="${kind}">+ New ${isDish ? "dish" : "prep"}</button></div>
       </div>
       <div class="filters">
         <input type="search" placeholder="Search" data-filter aria-label="Search" />
@@ -768,7 +1129,8 @@
       <div class="table-wrap"><table class="list cards">
         <thead><tr><th>Name</th>${isDish ? "<th class=hide-sm>Category</th><th class=hide-sm>Menu</th><th class=num>Cost / portion</th><th class=num>Target</th><th class=num>Menu price</th><th class=num>Food cost</th>" : "<th class=num>Cost / portion</th><th class=num>Batch cost</th><th class=num>Makes</th>"}<th>Since last check</th></tr></thead>
         <tbody>${rows || `<tr><td colspan="8" class="muted">${SITE.commis ? `Nothing yet: add your first one with “+ New ${isDish ? "dish" : "prep"}”.` : "Nothing yet. Import your sheets in Settings, or add one."}</td></tr>`}</tbody>
-      </table></div>`;
+      </table></div>
+      ${isDish ? "" : kitchenFold(true)}`;
   }
 
   /* ---------- scaling a recipe to a standard ---------- */
@@ -840,6 +1202,7 @@
   function recipePage(id) {
     const r = get("recipes", id);
     if (!r) return `<p>Not found. <a href="#/dishes">Back to dishes</a></p>`;
+    if (fromKitchen("recipes", id)) return kitchenPage(true, r, get("recipes", route().from));
     const s = coster.summary(r.id);
     const isDish = r.kind === "dish";
     const usedIn = coster.usedBy(r.id).filter((x) => x !== r.id).map((x) => get("recipes", x)).filter(Boolean).sort(byName);
@@ -863,6 +1226,7 @@
     const rt = route(), from = rt.from !== r.id ? get("recipes", rt.from) : null;
     if (from) cameFrom.set(r.id, from.id); else cameFrom.delete(r.id);
     return `
+      ${isEmployee() && !mine(r) ? `<div class="alert alert--check"><div>You can read this recipe but not change it. To work on your own version, press <strong>Duplicate</strong>: the copy is yours.</div></div>` : ""}
       ${from && rt.isNew ? `<p class="crumbs"><button class="btn btn--main" data-act="back-to" data-id="${esc(from.id)}">← Back to ${esc(from.name)}</button></p>
         ${!s.lines.length ? `<div class="alert alert--check"><div>New prep for <strong>${esc(from.name)}</strong>. Add its ingredients below and set how much it makes, then go back: the dish uses 1 portion of it, which you can change there.</div></div>` : ""}`
         : `<p class="crumbs"><a href="#/${isDish ? "dishes" : "preps"}">← ${isDish ? "Dishes" : "Preps"}</a>${backLink(from)}</p>`}
@@ -909,6 +1273,7 @@
             </div>
           </section>
           ${usedIn.length ? `<p class="muted">Used in: ${usedIn.map((u) => `<a href="#/recipe/${encodeURIComponent(u.id)}">${esc(u.name)}</a>`).join(", ")}</p>` : ""}
+          ${barUses("sub_recipe_id", r.id).length ? `<p class="muted">Used in ${barTag}: ${barUses("sub_recipe_id", r.id).map((u) => esc(u.name)).join(", ")}</p>` : ""}
           <div class="actions">
             <button class="btn" data-act="duplicate" data-id="${esc(r.id)}">Duplicate</button>
             <button class="btn" data-act="merge-recipe" data-id="${esc(r.id)}">Merge into another…</button>
@@ -934,12 +1299,13 @@
     let item = "", units = [], supplier = "";
     if (l.ingredient_id) {
       const ing = get("ingredients", l.ingredient_id);
-      item = ing ? `<a href="#/ingredient/${encodeURIComponent(ing.id)}/from/${encodeURIComponent(l.recipe_id)}">${esc(ing.name)}</a>` : `<span class="muted">(deleted)</span>`;
+      item = ing ? `<a href="#/ingredient/${encodeURIComponent(ing.id)}/from/${encodeURIComponent(l.recipe_id)}">${esc(ing.name)}</a>${fromKitchen("ingredients", ing.id) ? " " + kitchenTag() : ""}${ing.needs_check ? " " + estimatedTag : ""}` : `<span class="muted">(deleted)</span>`;
       // Its own kind of unit, plus by weight for something counted (or by the piece for something weighed) once "1 unit weighs" is set.
       const byWeight = (u) => parseNum(ing.each_kg) && (ing.base === "kg" ? Units.baseOf(u) === "unit" : Units.countable(ing.base) && Units.baseOf(u) === "kg");
       // …and anything it has a measure for (1 recipe = 12 kg = 66 portions).
       const measured = ing ? coster.countChoices(ing, false).map((m) => Units.baseOf(m)) : [];
       units = ing ? RECIPE_UNITS.filter((u) => Units.baseOf(u) === ing.base || byWeight(u) || measured.includes(Units.baseOf(u))) : RECIPE_UNITS;
+      if (BAR && ing && Barback.bottleMl(ing)) units = units.filter((u) => u !== "recipe"); // a bottle is the measure, not a batch
       const offers = ing ? coster.offersFor(ing.id) : [];
       const def = ing ? coster.defaultOffer(ing.id) : null;
       const label = (x) => `${x.offer.supplier || "No supplier"} · ${money(x.price, true)}${per(ing.base)}`;
@@ -952,7 +1318,7 @@
       if (row.offer && row.offer.locked) supplier += " " + lockTag(row.offer.locked_at);
     } else if (l.sub_recipe_id) {
       const sub = get("recipes", l.sub_recipe_id);
-      item = sub ? `<a href="#/recipe/${encodeURIComponent(sub.id)}/from/${encodeURIComponent(l.recipe_id)}">${esc(sub.name)}</a> <span class="tag">${sub.kind === "dish" ? "dish" : "prep"}</span>` : `<span class="muted">(deleted)</span>`;
+      item = sub ? `<a href="#/recipe/${encodeURIComponent(sub.id)}/from/${encodeURIComponent(l.recipe_id)}">${esc(sub.name)}</a> <span class="tag">${sub.kind === "dish" ? "dish" : "prep"}</span>${fromKitchen("recipes", sub.id) ? " " + kitchenTag() : ""}` : `<span class="muted">(deleted)</span>`;
       // Either of the prep's measures: what it makes, and its other measure (e.g. portions or grams).
       const unitsFor = (m) => (m === "portion" ? ["portion"] : m ? RECIPE_UNITS.filter((u) => Units.baseOf(u) === Units.baseOf(m)) : []);
       // …or by the recipe (the whole batch).
@@ -1139,9 +1505,9 @@
       const def = coster.defaultOffer(i.id), y = parseNum(i.yield) || 1;
       const n = data.offers.filter((o) => o.ingredient_id === i.id).length;
       return head + `<tr data-search="${esc((i.name + " " + i.category + " " + data.offers.filter((o) => o.ingredient_id === i.id).map((o) => o.supplier + " " + o.supplier_item).join(" ")).toLowerCase())}" data-group="${esc(cat)}" data-flag="${i.review || !def ? "1" : "0"}" data-noprice="${def ? "0" : "1"}">
-        <td><a href="#/ingredient/${encodeURIComponent(i.id)}">${esc(i.name)}</a> ${flagIcon(i.review)}</td>
+        <td><a href="#/ingredient/${encodeURIComponent(i.id)}">${esc(i.name)}</a> ${flagIcon(i.review)}${i.needs_check ? " " + estimatedTag : ""}</td>
         <td class="num">${def ? (def.offer.locked ? lockTag(def.offer.locked_at, true) + " " : "") + money(def.price, true) + `<span class="muted">${per(i.base)}</span>` : `<span class="warn">no price</span>`}
-          ${def && !def.offer.locked && y !== 1 ? `<div class="muted small">${money(def.price * y, true)} as bought</div>` : ""}</td>
+          ${def && !def.offer.locked && y !== 1 ? `<div class="muted small">${money(def.price * y, true)} as bought</div>` : ""}${BAR && def ? pourLine(i, def.price) : ""}</td>
         <td>${def ? esc(def.offer.supplier || "") : ""}${n > 1 ? ` <span class="tag">${n} suppliers</span>` : ""}</td>
         <td class="num nowrap"><input class="in in--yield${y !== 1 ? " in--cut" : ""}" inputmode="decimal" data-k="iy-${esc(i.id)}" data-act="ing-yield" data-id="${esc(i.id)}" value="${esc(yieldPct(y))}" aria-label="Yield of ${esc(i.name)}, in %" /> %</td>
       </tr>`;
@@ -1152,6 +1518,7 @@
         <div class="actions" style="margin:0">
           ${settings.drive && settings.drive.master ? `<button class="btn" data-act="master-sheet">Update “${esc(settings.drive.master.name)}”</button>` : ""}
           <button class="btn" data-act="master-csv">${SITE.commis ? "Download price list" : "Download Master Data"}</button>
+          ${bringLink()}
           <button class="btn btn--main" data-act="new-ingredient">+ New ingredient</button>
         </div>
       </div>
@@ -1161,11 +1528,14 @@
         <label class="check"><input type="checkbox" data-filter-noprice /> No price <span class="muted">(${list.filter((i) => !coster.defaultOffer(i.id)).length})</span></label>
       </div>
       ${sectionChips("ingredients", list.map(section))}
-      <p class="hint">Prices are per usable kg, L or unit: pack price ÷ (pack size × yield). <strong>Yield</strong> is ${SITE.commis ? "" : "Master Data's Rendement, "}the part left after trimming: type 65 for 65% (Enter goes to the next one). Anything bought in lb is converted.</p>
+      ${(() => { const n = isAdmin() ? list.filter((i) => i.needs_check).length : 0; return n ? `<div class="alert alert--check"><div><strong>${n} estimated price${n === 1 ? "" : "s"}</strong> from your team to double check. Tick "Needs checking" below to see ${n === 1 ? "it" : "them"}, then press "Mark as checked" on each.</div></div>` : ""; })()}
+      ${BAR ? `<p class="hint">Each price shows per litre, per bottle and per ounce. Give a bottle its size on its page to count it in bottles. Anything on your ${esc(SITE.name)} list can go in a cocktail too: type its name there.</p>` : ""}
+      <p class="hint"${BAR ? " hidden" : ""}>Prices are per usable kg, L or unit: pack price ÷ (pack size × yield). <strong>Yield</strong> is ${SITE.commis ? "" : "Master Data's Rendement, "}the part left after trimming: type 65 for 65% (Enter goes to the next one). Anything bought in lb is converted.</p>
       <div class="table-wrap"><table class="list cards">
         <thead><tr><th>Name</th><th class="num">Price used</th><th>Supplier</th><th class="num" title="Usable part after trimming (Rendement)">Yield</th></tr></thead>
         <tbody>${rows || `<tr><td colspan="4" class="muted">${SITE.commis ? "No ingredients yet: add one with “+ New ingredient”, or make them from an invoice." : "No ingredients yet. Import your Master Data in Settings."}</td></tr>`}</tbody>
-      </table></div>`;
+      </table></div>
+      ${kitchenFold(false)}`;
   }
 
   /* ---------- allergens ---------- */
@@ -1244,16 +1614,19 @@
   function ingredientPage(id) {
     const i = get("ingredients", id);
     if (!i) return `<p>Not found. <a href="#/ingredients">Back to ingredients</a></p>`;
+    if (fromKitchen("ingredients", id)) return kitchenPage(false, i, get("recipes", route().from));
     const offers = coster.offersFor(i.id);
     // The ticked price is today's one, even while a locked price is what recipes use.
     const def = coster.liveOffer(i.id);
     const used = coster.usedBy(i.id).map((x) => get("recipes", x)).filter(Boolean).sort(byName);
+    const inBar = barUses("ingredient_id", i.id);
+    const estimatedHere = isEmployee() && mine(i) && i.needs_check;
 
     const offerRows = offers.map(({ offer: o, price }) => `
       <tr>
         <td><input type="radio" name="pref" data-act="prefer" data-id="${esc(o.id)}" ${def && def.offer.id === o.id ? "checked" : ""} aria-label="Use this price in recipes" /></td>
         <td><input class="in" list="dl-suppliers" data-suggest-all data-k="o-sup-${o.id}" data-act="offer-field" data-field="supplier" data-id="${esc(o.id)}" value="${esc(o.supplier || "")}" placeholder="Supplier" /></td>
-        <td><input class="in" data-k="o-item-${o.id}" data-act="offer-field" data-field="supplier_item" data-id="${esc(o.id)}" value="${esc(o.supplier_item || "")}" placeholder="e.g. OIGNON JAUNE 50LB" /></td>
+        <td><input class="in" data-k="o-item-${o.id}" data-act="offer-field" data-field="supplier_item" data-id="${esc(o.id)}" value="${esc(o.supplier_item || "")}" placeholder="${BAR ? "e.g. GIN BEEFEATER 750 ML" : "e.g. OIGNON JAUNE 50LB"}" /></td>
         <td class="num">${moneyInput(`data-k="o-cost-${o.id}" data-act="offer-field" data-field="pack_cost" data-id="${esc(o.id)}" value="${esc(numText(o.pack_cost))}" aria-label="Pack price"`)}</td>
         <td class="num nowrap"><input class="in in--num" inputmode="decimal" data-k="o-qty-${o.id}" data-act="offer-field" data-field="pack_qty" data-id="${esc(o.id)}" value="${esc(numText(o.pack_qty))}" aria-label="Pack size" />
           <select class="in" data-k="o-unit-${o.id}" data-act="offer-field" data-field="pack_unit" data-id="${esc(o.id)}" aria-label="Pack unit">${ALL_UNITS.map((u) => `<option value="${u}"${o.pack_unit === u ? " selected" : ""}>${esc(unitLabel(u))}</option>`).join("")}</select></td>
@@ -1279,6 +1652,8 @@
         </div>
       </div>
 
+      ${BAR && i.base === "L" ? bottleCard(i) : ""}
+
       <section class="card card--flat">
         <h2>Made in-house</h2>
         ${(() => {
@@ -1292,13 +1667,14 @@
         })()}
       </section>
 
-      ${measuresCard(i)}
+      ${BAR && i.base === "L" ? "" : measuresCard(i)}
 
       ${allergenCard(i)}
 
       ${isPrepped(i) ? `<section class="card card--flat"><h2>Price lock</h2>
         ${lockBox({ kind: "ingredient", id: i.id, unit: i.base, locked: parseNum(i.locked_price), at: i.locked_at, live: (coster.liveOffer(i.id) || {}).price })}</section>` : ""}
 
+      ${estimatedHere ? `<p class="note">Type your best estimate below. It's used in costs right away, flagged until an administrator double checks it. After that, only they can change it.</p>` : ""}
       <h2>Supplier prices</h2>
       <p class="hint">The ticked price is the one recipes use (a recipe line can still pick another). "Name on invoice" is how the supplier writes it, for reading invoices later.</p>
       <div class="table-wrap"><table class="lines lines--offers">
@@ -1317,12 +1693,13 @@
 
       <div>
         <section>
-          <h2>Used in (${used.length})</h2>
-          ${used.length ? `<ul class="plain">${used.map((r) => `<li><a href="#/recipe/${encodeURIComponent(r.id)}">${esc(r.name)}</a> <span class="tag">${r.kind}</span></li>`).join("")}</ul>` : `<p class="muted">Not used in any recipe.</p>`}
+          <h2>Used in (${used.length + inBar.length})</h2>
+          ${used.length ? `<ul class="plain">${used.map((r) => `<li><a href="#/recipe/${encodeURIComponent(r.id)}">${esc(r.name)}</a> <span class="tag">${r.kind}</span></li>`).join("")}</ul>` : inBar.length ? "" : `<p class="muted">Not used in any recipe.</p>`}
+          ${inBar.length ? `<ul class="plain">${inBar.map((r) => `<li>${esc(r.name)} ${barTag}</li>`).join("")}</ul>` : ""}
           <label class="block">Notes<textarea class="in" rows="3" data-k="i-notes" data-act="ing-field" data-field="notes">${esc(i.notes || "")}</textarea></label>
           <div class="actions">
             <button class="btn" data-act="merge" data-id="${esc(i.id)}">Merge into another…</button>
-            <button class="btn btn--danger" data-act="delete-ingredient" data-id="${esc(i.id)}" ${used.length ? `disabled title="Remove it from its recipes first, or merge it into another ingredient"` : ""}>Delete ingredient</button>
+            <button class="btn btn--danger" data-act="delete-ingredient" data-id="${esc(i.id)}" ${used.length || inBar.length ? `disabled title="Remove it from its recipes first, or merge it into another ingredient"` : ""}>Delete ingredient</button>
           </div>
         </section>
       </div>`;
@@ -1628,8 +2005,10 @@
       const qty = c ? parseNum(c.qty) : null;
       // The unit it's counted in: what this count was typed in (older counts: the unit it's priced in), else the pick.
       const x = it.kind === "prep" ? it.recipe : it.ing;
-      const choices = Store.part16Old() ? [it.base] : coster.countChoices(x, it.kind === "prep");
-      const unit = qty != null ? c.unit || it.base : choices.includes(x.count_unit) ? x.count_unit : it.base;
+      let choices = Store.part16Old() ? [it.base] : coster.countChoices(x, it.kind === "prep");
+      // Barback: a bottle with a size is counted in bottles unless you picked otherwise.
+      if (BAR && it.kind === "ingredient" && choices.includes("bottle")) choices = ["bottle", ...choices.filter((u) => u !== "bottle" && u !== "recipe")];
+      const unit = qty != null ? c.unit || it.base : choices.includes(x.count_unit) ? x.count_unit : choices[0] === "bottle" ? "bottle" : it.base;
       if (!choices.includes(unit)) choices.unshift(unit);
       const one = pricedAmount(it, 1, unit); // how much of what the price is per one of these is
       const inPriced = qty == null ? null : pricedAmount(it, qty, unit);
@@ -1640,7 +2019,10 @@
       // A container comes off when counting by weight (a past count keeps what it was saved at).
       const tare = unit === "kg" ? parseNum(x.container_kg) : null;
       const containers = c && c.containers != null ? parseNum(c.containers) : pendingContainers.has(it.key) ? pendingContainers.get(it.key) : 1;
-      return { item: it, kind: it.kind, offer, batch, price, locked, count: c, qty, unit, choices, one, tare: tare > 0 ? tare : null, containers,
+      // Barback, a bottle with its weights: full ones are counted, opened ones weighed.
+      const hybrid = BAR && it.kind === "ingredient" && unit === "bottle" && Barback.canWeigh(x);
+      const full = !hybrid || !c ? null : c.full_bottles != null ? parseNum(c.full_bottles) : c.open_g ? null : qty;
+      return { item: it, kind: it.kind, offer, batch, price, locked, count: c, qty, unit, choices, one, tare: tare > 0 ? tare : null, containers, hybrid, full, openG: hybrid && c ? c.open_g || "" : "",
         unitPrice: price != null && one != null ? price * one : price, problem: qty != null && inPriced == null,
         value: inPriced != null && price != null ? inPriced * price : 0,
         last: lastHere != null ? lastHere : lastQty, lastUnit: lastHere != null ? unit : lastFrom };
@@ -1683,7 +2065,7 @@
       const head = s !== current ? `<tr class="section-row" data-section="${esc(s)}" data-value="${bySec.get(s).value}"><th colspan="3" scope="colgroup">${esc(s)}</th><th class="num no-print" colspan="2">${money(bySec.get(s).value)}</th></tr>` : "";
       current = s;
       const i = r.item, u = plural(r.unit), lastU = r.lastUnit ? plural(r.lastUnit) : "";
-      const shownQty = r.qty != null && r.tare ? r.qty + r.containers * r.tare : r.qty;
+      const shownQty = r.hybrid ? r.full : r.qty != null && r.tare ? r.qty + r.containers * r.tare : r.qty;
       const lastNote = `${esc(numText(r.last))} ${esc(lastU)}`;
       const href = r.kind === "prep" ? `#/recipe/${encodeURIComponent(i.id)}` : `#/ingredient/${encodeURIComponent(i.id)}`;
       // In a closed month an item can be long gone: its name stays, without a link to nowhere.
@@ -1692,11 +2074,12 @@
         <td>${stillThere ? `<a href="${href}">${esc(i.name)}</a>` : `<strong>${esc(i.name)}</strong>`}${r.kind === "prep" ? ` <span class="tag" title="Valued at what it costs to make">prep</span>` : ""}</td>
         <td class="num muted no-print">${r.price == null ? `<span class="warn">no price</span>` : (r.locked != null ? lockTag(r.locked, true) + " " : "") + money(r.unitPrice, true) + per(r.unit)}</td>
         <td class="num muted nowrap"><span class="count-last">${r.last == null ? `<span class="count-last__n"></span><span class="count-last__u"></span>` : `<span class="count-last__n">${esc(numText(r.last))}</span> <span class="count-last__u">${esc(lastU)}</span>`}<span class="count-last__same no-print">${r.last != null && r.qty == null ? `<button class="btn btn--small btn--same" data-act="count-same" data-kind="${r.kind}" data-id="${esc(i.id)}" data-month="${month}" data-qty="${esc(numText(r.last))}" data-unit="${esc(r.unit)}" data-last-unit="${esc(r.lastUnit)}" title="Nothing used: keep last month's ${lastNote}">Same</button>` : ""}</span></span></td>
-        <td class="num nowrap count-cell"><span class="count-box">${r.frozen ? `<span class="count-frozen">${esc(numText(r.qty))}</span>` : `<input class="in in--num" inputmode="decimal" data-k="cnt-${i.id}" data-act="count" data-kind="${r.kind}" data-id="${esc(i.id)}" data-month="${month}" data-unit="${esc(r.unit)}" ${r.last != null ? `data-last="${esc(numText(r.last))}" data-last-unit="${esc(r.lastUnit)}"` : ""} value="${esc(numText(shownQty))}" aria-label="${r.tare ? "Scale reading" : "Stock"} of ${esc(i.name)} in ${esc(u)}" />`}
-          ${r.choices.length > 1 ? `<select class="in count-unit no-print" data-k="cnt-u-${i.id}" data-act="count-unit" data-kind="${r.kind}" data-id="${esc(i.id)}" data-month="${month}" aria-label="Count ${esc(i.name)} in">${r.choices.map((c) => `<option value="${esc(c)}"${c === r.unit ? " selected" : ""}>${esc(plural(c))}</option>`).join("")}</select><span class="count-unit count-unit--text print-text">${esc(u)}</span>`
+        <td class="num nowrap count-cell"><span class="count-box">${r.frozen ? `<span class="count-frozen">${esc(numText(r.qty))}</span>` : `<input class="in in--num" inputmode="decimal" data-k="cnt-${i.id}" data-act="count" data-kind="${r.kind}" data-id="${esc(i.id)}" data-month="${month}" data-unit="${esc(r.unit)}" ${r.last != null ? `data-last="${esc(numText(r.last))}" data-last-unit="${esc(r.lastUnit)}"` : ""} value="${esc(numText(shownQty))}" aria-label="${r.hybrid ? "Full bottles" : r.tare ? "Scale reading" : "Stock"} of ${esc(i.name)} in ${esc(u)}" />`}
+          ${r.choices.length > 1 ? `<select class="in count-unit no-print" data-k="cnt-u-${i.id}" data-act="count-unit" data-kind="${r.kind}" data-id="${esc(i.id)}" data-month="${month}" aria-label="Count ${esc(i.name)} in">${r.choices.map((c) => `<option value="${esc(c)}"${c === r.unit ? " selected" : ""}>${esc(r.hybrid && c === "bottle" ? "full bottles" : plural(c))}</option>`).join("")}</select><span class="count-unit count-unit--text print-text">${esc(r.hybrid ? "full bottles" : u)}</span>`
           : `<span class="count-unit count-unit--text muted">${esc(u)}</span>`}</span>
           ${r.tare ? `<span class="count-tare no-print">− <input class="in in--tare" inputmode="decimal" data-k="cnt-c-${i.id}" data-act="count-containers" data-kind="${r.kind}" data-id="${esc(i.id)}" data-month="${month}" value="${esc(numText(r.containers))}" aria-label="How many containers are on the scale for ${esc(i.name)}" /> × ${esc(gramsText(r.tare))} container${r.qty != null ? ` = <strong>${esc(numText(+r.qty.toFixed(4)))} kg</strong>` : ""}</span>
           <span class="count-tare print-text">with the container (${esc(gramsText(r.tare))} comes off)</span>` : ""}
+          ${r.hybrid && !r.frozen ? openBox(r, month) : ""}
           ${r.problem ? `<span class="problem count-tare">${esc(i.name)} has no measure for ${esc(u)} now, so this has no value.</span>` : ""}</td>
         <td class="num no-print">${r.qty == null ? "" : money(r.value)}</td>
       </tr>`;
@@ -1731,7 +2114,7 @@
       </div>
       ${sectionChips("inventory", rows.map((r) => section(r.item)))}
       ${Store.part5Old() && data.recipes.some((r) => r.in_inventory) ? `<p class="note note--bad">Run the updated supabase/schema.sql (part 5) in Supabase to count preps.</p>` : ""}
-      ${closed ? "" : `<p class="hint">Count in the unit shown. An item with other measures has a list beside its box: pick kg, portions, recipes… and the app remembers it for that item. Press Enter to go to the next item. Nothing used since last month?
+      ${closed ? "" : BAR ? `<p class="hint">Count the full bottles in the first box. If a bottle has its empty and full weights, put the opened one on the scale and type the grams in the second box: the two add up. Two opened? <strong>840+700</strong>. With no weights saved, use tenths: <strong>3.4</strong> is three full and one four-tenths full. Press Enter to go on. Nothing used since last month? Press <strong>Same</strong>, or type <strong>=</strong> in the box. Values use today's prices.</p>` : `<p class="hint">Count in the unit shown. An item with other measures has a list beside its box: pick kg, portions, recipes… and the app remembers it for that item. Press Enter to go to the next item. Nothing used since last month?
         Press <strong>Same</strong>, or type <strong>=</strong> in the box, to keep last month's amount. Values use today's prices;
         preps are worth what they cost to make. Tick or untick "On the monthly count" on an ingredient or a prep to add or remove it.</p>`}
       <div class="table-wrap"><table class="list inv cards">
@@ -1889,7 +2272,7 @@
 
   /* ---------- invoices ---------- */
   // Invoices being reviewed are kept on this device until saved, so a closed tab doesn't lose the work.
-  const INV_KEY = "costing.invoiceWork";
+  let INV_KEY = "costing.invoiceWork"; // each set of records has its own (see applyProject)
   let invoiceWork = readJSON(INV_KEY, []);
   const keepInvoices = () => writeJSON(INV_KEY, invoiceWork);
   const PACK_UNITS = ["kg", "g", "lb", "oz", "L", "ml", "unit", "dozen", "portion", "recipe", "bunch"];
@@ -2052,6 +2435,7 @@
       const fields = { supplier: inv.supplier, supplier_item: key, pack_cost: l.price, pack_qty: +l.packQty, pack_unit: l.packUnit, updated_at: inv.date || today() };
       if (o) await patch("offers", o.id, fields);
       else o = await insert("offers", { id: uid(), ingredient_id: i.id, ...fields });
+      await sizeBottle(i.id, fields.pack_qty, fields.pack_unit);
       await insert("price_history", { id: uid(), offer_id: o.id, ingredient_id: i.id, supplier: inv.supplier, pack_cost: l.price, pack_qty: +l.packQty,
         pack_unit: l.packUnit, date: inv.date || today(), source: "Invoice " + inv.file.replace(/\.pdf$/i, "") });
       // The newest price wins. Only an invoice or a price you typed has a real date; imported prices
@@ -2381,7 +2765,7 @@
       <section class="card">
         <h2>${SITE.commis ? "Your account" : "Where your data is saved"}</h2>
         ${remote && SITE.commis ? `<p>Signed in as <strong>${esc(Auth.email())}</strong>${Auth.restaurant() ? ` for ${esc(Auth.restaurant())}` : ""}. Your data is
-            saved online and only this account can see it.</p><button class="btn" data-act="sign-out">Sign out</button><p class="small muted">${termsLinks} · ${privacyLinks}</p>`
+            saved online and ${Store.teamsReady() ? "only this account and the people you give access to can see it" : "only this account can see it"}.</p><button class="btn" data-act="sign-out">Sign out</button><p class="small muted">${termsLinks} · ${privacyLinks}</p>`
           : remote ? `<p>Saved in <strong>Supabase</strong>, signed in as ${esc(Auth.email())}.</p><button class="btn" data-act="sign-out">Sign out</button>`
           : Auth.configured() ? `<p>Supabase is set up. Sign in to use your saved data.</p>
             <form class="signin" data-form="sign-in"><input class="in" type="email" name="email" placeholder="Email" autocomplete="username" required />
@@ -2389,15 +2773,17 @@
           : `<p><strong>Local mode:</strong> data is saved in this browser only. Fine for trying it out; connect Supabase (see README) to keep it safe and use it on other devices.</p>`}
         <p class="muted">${counts}</p>
       </section>
+      ${myPlaceCard()}
+      ${peopleCard()}
       <section class="card">
         <h2>Accessibility</h2>
         <p>Colour-blind friendly colours, low vision (bigger text, stronger contrast), and a dyslexia-friendly font. Saved on this device.</p>
         <button class="btn" type="button" data-access-open>Accessibility options</button>
       </section>
       ${SITE.support ? `<section class="card"><h2>Buy us a soda</h2>${supportBody()}</section>` : ""}
-      ${categoriesCard()}
-      ${SITE.commis && !GDrive.configured() ? "" : driveCard()}
-      ${SITE.commis ? "" : `<section class="card">
+      ${isEmployee() ? "" : categoriesCard()}
+      ${ACCOUNT || (SITE.commis && !GDrive.configured()) ? "" : driveCard()}
+      ${SITE.commis || BAR || ACCOUNT ? "" : `<section class="card">
         <h2>Import your sheets</h2>
         <p>Load the <code>seed.json</code> made by <code>node scripts/import-sheets.js</code> from your Menu folder. <strong>This replaces everything</strong> in ${remote ? "Supabase" : "this browser"}.</p>
         <input type="file" accept=".json,application/json" data-act="import-file" aria-label="Choose seed.json" />
@@ -2409,9 +2795,9 @@
           Nothing else is changed.</p>
         <input type="file" accept=".json,application/json" data-act="import-extra" aria-label="Choose an inventory or cards file" />
       </section>`}
-      <section class="card">
+      ${isEmployee() ? "" : `<section class="card">
         <h2>Backups</h2>
-        ${GDrive.configured() ? `<p>Every day you connect Google Drive, a full copy goes to <strong>${SITE.app} backups</strong> in your My Drive (the last 30 are kept).
+        ${GDrive.configured() ? `<p>Every day you connect Google Drive, a full copy goes to <strong>${BAR ? "Barback" : SITE.app} backups</strong> in your My Drive (the last 30 are kept).
           ${settings.lastBackup ? `Last one: <strong>${esc(settings.lastBackup)}</strong>.` : "None yet."}
           ${SITE.commis ? "" : `To go back to one, download it from Drive and load it under "Import your sheets".`}</p>` : `<p>Download a full copy of your data whenever you like.</p>`}
         <p>
@@ -2420,8 +2806,8 @@
           ${!remote ? `<button class="btn btn--danger" data-act="clear-local">Clear this browser's data</button>` : ""}
         </p>
         <p class="hint">Also: everything you type is kept on this device until it has saved, so a dropped connection or a closed tab doesn't lose it.</p>
-      </section>
-      ${trashCard()}`;
+      </section>`}
+      ${isEmployee() ? "" : trashCard()}`;
   }
 
   /* ---------- your own categories ---------- */
@@ -2508,10 +2894,10 @@
     try {
       const d = settings.drive || {};
       let folder = d.backups && (await GDrive.exists(d.backups.id)) ? d.backups : null;
-      if (!folder) folder = await GDrive.makeFolder(`${SITE.app} backups`);
+      if (!folder) folder = await GDrive.makeFolder(`${BAR ? "Barback" : SITE.app} backups`);
       const now = new Date(), two = (n) => String(n).padStart(2, "0");
       const stamp = `${today()} ${two(now.getHours())}h${two(now.getMinutes())}`;
-      await GDrive.saveFile({ name: `kitchen-costing ${stamp}.json`, mime: "application/json", folderId: folder.id,
+      await GDrive.saveFile({ name: `${BAR ? "barback" : "kitchen-costing"} ${stamp}.json`, mime: "application/json", folderId: folder.id,
         content: JSON.stringify({ app: "kitchen-costing", version: 1, exported_at: new Date().toISOString(), ...data }) });
       const old = (await GDrive.listFolder(folder.id)).slice(30);
       for (const f of old) await GDrive.trash(f.id);
@@ -2536,6 +2922,7 @@
 
   async function saveSettings(next) {
     settings = next;
+    if (isEmployee()) return; // the account's settings are its administrators' to change: an employee's picks last this visit
     try { await store.saveSettings(settings); settingsProblem = ""; }
     catch (e) {
       settingsProblem = /settings/.test(e.message) ? "Couldn't save: run the updated supabase/schema.sql once in Supabase (it adds a small settings table)." : e.message;
@@ -2944,7 +3331,7 @@
       let v = el.value;
       if (["multiplier", "menu_price"].includes(f)) {
         v = parseNum(v);
-        if (f === "multiplier" && !(v > 0)) v = 4;
+        if (f === "multiplier" && !(v > 0)) v = BAR ? Barback.MULTIPLIER : 4;
       }
       if (f === "name" && !v.trim()) { toast("A name is needed.", true); return render(); }
       if (f === "category") return actions["dish-cat"]({ dataset: { id: r.id }, value: v });
@@ -3070,8 +3457,10 @@
       if (!text) return;
       const isPrep = /\s\(prep\)$/.test(text);
       const name = text.replace(/\s\(prep\)$/, "").toLowerCase();
-      const sub = data.recipes.find((x) => x.kind === "prep" && x.name.toLowerCase() === name && (isPrep || !data.ingredients.some((i) => i.name.toLowerCase() === name)));
+      let sub = data.recipes.find((x) => x.kind === "prep" && x.name.toLowerCase() === name && (isPrep || !data.ingredients.some((i) => i.name.toLowerCase() === name)));
       let ing = !isPrep && data.ingredients.find((i) => i.name.toLowerCase() === name);
+      // Barback: not one of its own, so it may be one of the kitchen's.
+      if (BAR && !sub && !ing) ({ sub, ing } = kitchenPick(text));
       if (sub && sub.id === r.id) { toast("A prep can't use itself.", true); el.value = ""; return; }
       const pos = Math.max(0, ...data.lines.filter((l) => l.recipe_id === r.id).map((l) => l.pos || 0)) + 1;
       let newPrep = null;
@@ -3083,15 +3472,16 @@
           ] });
           if (!pick) return;
           if (pick === "prep") {
-            newPrep = await insert("recipes", { id: uid(), name: text, kind: "prep", menu: "Preps", yield_qty: 1, yield_unit: "portion", ack_cost: 0 });
-            await insert("lines", { id: uid(), recipe_id: r.id, pos, sub_recipe_id: newPrep.id, qty: 1, unit: "portion" });
+            newPrep = await insert("recipes", { id: uid(), name: text, kind: "prep", menu: "Preps", yield_qty: 1, yield_unit: BAR ? "L" : "portion", ack_cost: 0 });
+            await insert("lines", { id: uid(), recipe_id: r.id, pos, sub_recipe_id: newPrep.id, qty: 1, unit: BAR ? "floz" : "portion" });
             return;
           }
-          ing = await insert("ingredients", { id: uid(), name: text, category: "", base: "kg", yield: 1, review: "New: add a supplier price." });
+          ing = await insert("ingredients", { id: uid(), name: text, category: "", base: BAR ? "L" : "kg", yield: 1, review: "New: add a supplier price." });
         }
+        // Behind a bar, anything liquid starts in ounces.
         await insert("lines", sub
-          ? { id: uid(), recipe_id: r.id, pos, sub_recipe_id: sub.id, qty: 1, unit: sub.yield_unit === "portion" ? "portion" : sub.yield_unit }
-          : { id: uid(), recipe_id: r.id, pos, ingredient_id: ing.id, qty: null, unit: ing.base });
+          ? { id: uid(), recipe_id: r.id, pos, sub_recipe_id: sub.id, qty: 1, unit: BAR && Units.baseOf(sub.yield_unit) === "L" ? "floz" : sub.yield_unit === "portion" ? "portion" : sub.yield_unit }
+          : { id: uid(), recipe_id: r.id, pos, ingredient_id: ing.id, qty: null, unit: BAR && ing.base === "L" ? "floz" : ing.base });
         await settle(r.id);
       });
       // A new prep opens straight away, with a button back to this recipe.
@@ -3123,7 +3513,7 @@
     async "recipe-checked"(el) { await write(() => patch("recipes", el.dataset.id, { review: "" })); },
     async "new-recipe"(el) {
       const kind = el.dataset.kind;
-      const r = { id: uid(), name: kind === "dish" ? "New dish" : "New prep", kind, menu: "", yield_qty: 1, yield_unit: "portion", multiplier: kind === "dish" ? 4 : null, ack_cost: 0, notes: "", review: "" };
+      const r = { id: uid(), name: kind === "dish" ? (BAR ? "New cocktail" : "New dish") : "New prep", kind, menu: "", yield_qty: 1, yield_unit: BAR && kind === "prep" ? "L" : "portion", multiplier: kind === "dish" ? (BAR ? Barback.MULTIPLIER : 4) : null, ack_cost: 0, notes: "", review: "" };
       await write(() => insert("recipes", r));
       location.hash = "#/recipe/" + r.id;
       setTimeout(() => { const n = $('[data-k="r-name"]'); if (n) n.select(); }, 0);
@@ -3178,6 +3568,8 @@
       const r = get("recipes", el.dataset.id);
       const users = coster.usedBy(r.id).filter((x) => x !== r.id);
       if (users.length) { toast(`Used in ${users.length} other recipe(s). Remove it from them first.`, true); return; }
+      const inBar = barUses("sub_recipe_id", r.id);
+      if (inBar.length) { toast(`Barback uses it: ${inBar.map((x) => x.name).join(", ")}. Take it out there first.`, true); return; }
       if (!(await ask(`Delete "${r.name}"? You can put it back from Settings → Recently deleted.`, { ok: "Delete", danger: true }))) return;
       const lines = data.lines.filter((l) => l.recipe_id === r.id);
       const entry = toTrash(r.name, r.kind, { recipes: [{ ...r }], lines: lines.map((l) => ({ ...l })), counts: data.counts.filter((c) => c.recipe_id === r.id).map((c) => ({ ...c })) });
@@ -3215,7 +3607,7 @@
       }
       await write(() => patch("ingredients", route().id, { [f]: typeof v === "string" ? v.trim() : v }));
     },
-    async "ing-checked"(el) { await write(() => patch("ingredients", el.dataset.id, { review: "" })); },
+    async "ing-checked"(el) { await write(() => patch("ingredients", el.dataset.id, Store.part20Old() ? { review: "" } : { review: "", needs_check: false })); },
     // One allergen ticked or unticked on an item (contains and may-contain exclude each other), or "contains none".
     async allergen(el) {
       if (Store.part12Old()) return toast("Run part 12 of supabase/schema.sql in Supabase (SQL Editor) to save allergens.", true);
@@ -3241,9 +3633,11 @@
       const f = el.dataset.field;
       const v = ["pack_cost", "pack_qty"].includes(f) ? parseNum(el.value) : el.value.trim();
       const priceChange = ["pack_cost", "pack_qty", "pack_unit"].includes(f);
+      const wasMl = BAR ? Units.convert(+o.pack_qty, o.pack_unit, "ml") : null;
       await write(async () => {
         await patch("offers", o.id, priceChange ? { [f]: v, updated_at: today() } : { [f]: v });
         if (priceChange) await logPrice(o, "Typed in");
+        if (priceChange) await sizeBottle(o.ingredient_id, o.pack_qty, o.pack_unit, wasMl);
       });
     },
     async prefer(el) {
@@ -3252,7 +3646,9 @@
     },
     async "add-offer"(el) {
       const i = get("ingredients", el.dataset.id);
-      await write(() => insert("offers", { id: uid(), ingredient_id: i.id, supplier: "", supplier_item: "", pack_cost: null, pack_qty: 1, pack_unit: i.base, updated_at: today() }));
+      // Behind a bar a price is usually for one bottle.
+      const pack = BAR && i.base === "L" ? { pack_qty: Barback.bottleMl(i) || 750, pack_unit: "ml" } : { pack_qty: 1, pack_unit: i.base };
+      await write(() => insert("offers", { id: uid(), ingredient_id: i.id, supplier: "", supplier_item: "", pack_cost: null, ...pack, updated_at: today() }));
       const last = data.offers.filter((o) => o.ingredient_id === i.id).pop();
       const s = last && main.querySelector(`[data-k="o-sup-${CSS.escape(last.id)}"]`);
       if (s) s.focus();
@@ -3274,10 +3670,10 @@
       if (!write.failed) toast(o.supplier ? `Deleted the ${o.supplier} price.` : "Deleted the price.", false, undoFor(entry));
     },
     async "new-ingredient"() {
-      const name = (await ask("New ingredient: the name, the way you write it.", { ok: "Add", input: true, placeholder: "e.g. Oignons, Jaune" })) || "";
+      const name = (await ask("New ingredient: the name, the way you write it.", { ok: "Add", input: true, placeholder: BAR ? "e.g. Gin, Beefeater" : "e.g. Oignons, Jaune" })) || "";
       if (!name) return;
       if (data.ingredients.some((i) => i.name.toLowerCase() === name.toLowerCase())) { toast("That ingredient already exists.", true); return; }
-      const i = { id: uid(), name, category: "", base: "kg", yield: 1, notes: "", review: "" };
+      const i = { id: uid(), name, category: "", base: BAR ? "L" : "kg", yield: 1, notes: "", review: "" };
       await write(() => insert("ingredients", i));
       location.hash = "#/ingredient/" + i.id;
     },
@@ -3318,9 +3714,13 @@
     async "import-file"(el) {
       const file = el.files && el.files[0];
       if (!file) return;
+      if (ACCOUNT) { toast("Importing sheets replaces a whole account: only its owner can, from their own account.", true); return; }
       let seed;
       try { seed = JSON.parse(await file.text()); } catch { toast("That file isn't a backup or seed.json.", true); return; }
       if (!Store.TABLES.every((t) => Array.isArray(seed[t]))) { toast("That file is missing some tables.", true); return; }
+      // Replacing the kitchen's items would pull them out from under Barback's cocktails.
+      const linked = Store.borrowed().lines.filter((l) => get("ingredients", l.ingredient_id) || get("recipes", l.sub_recipe_id)).length;
+      if (linked) { toast(`Barback's cocktails use ${linked} of the items and preps here. Take them out there first, then import.`, true); return; }
       if (!(await ask(`Replace everything ${store.kind === "supabase" ? "in Supabase" : "in this browser"} with ${seed.ingredients.length} ingredients and ${seed.recipes.length} recipes from ${file.name}?`, { ok: "Replace everything", danger: true }))) { el.value = ""; return; }
       const shaped = Object.fromEntries(Store.TABLES.map((t) => [t, seed[t].map((r) => Store.shape(t, r))]));
       toast("Importing…");
@@ -3396,7 +3796,7 @@
       const blob = new Blob([JSON.stringify({ app: "kitchen-costing", version: 1, exported_at: new Date().toISOString(), ...data })], { type: "application/json" });
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
-      a.download = `kitchen-costing-backup-${today()}.json`;
+      a.download = `${BAR ? "barback" : "kitchen-costing"}-backup-${today()}.json`;
       a.click();
       setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     },
@@ -3451,12 +3851,109 @@
         qty = Costing.netWeight(typed, containers, tare);
         if (qty == null) { toast(`${typed} kg is lighter than the container (${gramsText(containers * tare)}). Type what the scale shows with the container on, or set the containers to 0.`, true); return render(); }
       }
-      const fields = Store.part16Old() ? { qty } : { qty, unit, containers: tare ? containers : null };
+      // Barback, a bottle with its weights: this box is the full bottles, and what's on the scale adds to them.
+      let madeUp = BAR && !isPrep ? { full_bottles: null, open_g: null } : {};
+      if (BAR && !isPrep && unit === "bottle" && Barback.canWeigh(x)) {
+        if (same) {
+          const was = data.counts.find((c) => c.month === shiftMonth(month, -1) && c.ingredient_id === ingId);
+          madeUp = { full_bottles: was && was.full_bottles != null ? was.full_bottles : null, open_g: (was && was.open_g) || null };
+        } else {
+          const opened = (row && row.open_g) || "", sum = Barback.hybridCount(typed, opened, x.empty_g, x.full_g);
+          if (sum.problem) { toast(sum.problem, true); return render(); }
+          qty = typed == null && !opened ? null : sum.qty;
+          madeUp = { full_bottles: typed, open_g: opened || null };
+        }
+      }
+      const fields = Store.part16Old() ? { qty } : { qty, unit, containers: tare ? containers : null, ...madeUp };
       await write(async () => {
         if (qty == null) { if (row) await removeRows("counts", row.id); }
         else if (row) await patch("counts", row.id, fields);
         else await insert("counts", { id: uid(), month, [field]: ingId, ...fields });
       });
+    },
+    // Barback: what the opened bottles weigh, added to the full ones. "840", or "840+700" for two.
+    async "count-open"(el) {
+      const month = el.dataset.month, id = el.dataset.id;
+      if (closedMonth(month)) { toast(`${monthLabel(month)} is closed. Reopen it to change a count.`, true); return render(); }
+      const x = get("ingredients", id), row = data.counts.find((c) => c.month === month && c.ingredient_id === id);
+      const opened = el.value.trim();
+      // A count made before the weights were saved: its whole bottles are the full ones.
+      const full = !row ? null : row.full_bottles != null ? parseNum(row.full_bottles) : row.open_g ? null : Math.floor(parseNum(row.qty) || 0);
+      if (!opened && full == null) { if (row) await write(() => removeRows("counts", row.id)); return; }
+      const sum = Barback.hybridCount(full, opened, x.empty_g, x.full_g);
+      if (sum.problem) { toast(sum.problem, true); return render(); }
+      const fields = { qty: sum.qty, unit: "bottle", containers: null, full_bottles: full, open_g: opened || null };
+      await write(async () => {
+        if (row) await patch("counts", row.id, fields);
+        else await insert("counts", { id: uid(), month, ingredient_id: id, ...fields });
+      });
+    },
+    // A bottle's size and weights, on its page.
+    async "bottle-field"(el) {
+      const i = get("ingredients", el.dataset.id), f = el.dataset.field, text = el.value.trim(), v = text ? parseNum(text) : null;
+      if (text && !(v > 0)) { toast("That needs a number above zero, or leave it empty.", true); return render(); }
+      await write(() => patch("ingredients", i.id, f === "size" ? { measures: Barback.withBottleSize(i, v) } : { [f]: v }));
+    },
+    "open-in-kitchen"(el) { switchProject("kitchen", `#/${el.dataset.page}/${encodeURIComponent(el.dataset.id)}`); },
+    // People in an account.
+    async "person-invite"() {
+      const email = $("#inviteEmail").value.trim().toLowerCase(), kitchen = $("#inviteKitchen").checked, bar = $("#inviteBarback"), barback = !!(bar && bar.checked);
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return toast("Type their email address.", true);
+      if (email === String(Auth.email()).toLowerCase()) return toast("That's you: you already have this account.", true);
+      if (people.some((m) => m.email === email)) return toast("They're already on the list.", true);
+      if (!kitchen && !barback) return toast(`Pick ${SITE.name}, Barback or both.`, true);
+      const row = { account_id: Store.account(), email, role: $("#inviteRole").value, kitchen, barback, can_count: $("#inviteCount").checked, account_name: (ACCOUNT && ACCOUNT.name) || Auth.restaurant() || Auth.email() };
+      await write(async () => { await store.invite(row); people = await store.people(Store.account()); });
+      if (!write.failed) toast(`Done. Let ${email} know: they'll see it when they sign in or sign up with that email.`);
+    },
+    async "person-field"(el) {
+      const m = people.find((x) => x.email === el.dataset.email), f = el.dataset.field, v = el.type === "checkbox" ? el.checked : el.value;
+      if (!m) return render();
+      const next = { ...m, [f]: v };
+      if (!next.kitchen && !next.barback) { toast(`They need ${SITE.name}, Barback or both. To take away all access, press ×.`, true); return render(); }
+      await write(async () => { await store.changePerson(Store.account(), m.email, { [f]: v }); people = await store.people(Store.account()); });
+    },
+    async "person-remove"(el) {
+      const email = el.dataset.email;
+      if (!(await ask(`Take away ${email}'s access to this account? What they made here stays here, and their own account isn't touched.`, { ok: "Remove", danger: true }))) return;
+      await write(async () => { await store.removePerson(Store.account(), email); people = await store.people(Store.account()); });
+    },
+    async "leave-account"() {
+      if (!(await ask(`Leave ${ACCOUNT.name || "this account"}? Your own account isn't touched. What you made here stays here, and you won't see it any more.`, { ok: "Leave", danger: true }))) return;
+      try { await store.removePerson(ACCOUNT.id, ACCOUNT.email); await goTo(Store.me()); toast("You've left. This is your own account."); }
+      catch (e) { toast(e.message, true); }
+    },
+    // Bringing recipes in from another account.
+    async "bring-from"(el) {
+      bring.from = el.value || null; bring.rows = null; bring.recipes.clear(); bring.items.clear();
+      if (!bring.from) return render();
+      if (!bringSources().some((s) => s.id === bring.from)) { bring.from = null; return render(); }
+      try { bring.rows = await store.readAccount(bring.from); } catch (e) { toast(e.message, true); }
+      render();
+    },
+    "bring-pick"(el) { const set = bring[el.dataset.kind]; if (el.checked) set.add(el.dataset.id); else set.delete(el.dataset.id); render(); },
+    async "bring-go"() {
+      if (!bring.rows || !bringSources().some((s) => s.id === bring.from)) return;
+      const estimate = isEmployee();
+      const p = Transfer.plan({ source: bring.rows, target: BAR ? withKitchen() : data, picked: { recipes: [...bring.recipes], items: [...bring.items] }, newId: uid, estimate, note: estimateNote() });
+      const same = p.matchedItems.length + p.matchedPreps.length;
+      if (!(await ask(`Bring in ${p.recipes.length} recipe(s) and ${p.ingredients.length} new item(s)?${same ? ` ${same} already here will be used as they are.` : ""}${estimate && p.ingredients.length ? " The new items' prices stay as estimates until an administrator checks them." : ""}`, { ok: "Import" }))) return;
+      await write(async () => {
+        const many = async (table, rows) => { if (rows.length) await store.insert(table, rows.map((r) => Store.shape(table, stamp(table, r)))); };
+        await many("ingredients", p.ingredients);
+        await many("recipes", p.recipes);
+        await many("offers", p.offers);
+        await many("lines", p.lines);
+        for (const l of p.later) await store.update(l.table, l.id, l.changes);
+        data = await store.loadAll();
+        rebuild();
+        // What they cost today is where their price alerts start from.
+        for (const r of p.recipes) await patch("recipes", r.id, { ack_cost: Math.round(coster.recipeCost(r.id).perYield * 10000) / 10000 });
+      });
+      if (write.failed) return;
+      bring.from = null; bring.rows = null; bring.recipes.clear(); bring.items.clear();
+      toast(`Imported ${p.recipes.length} recipe(s) and ${p.ingredients.length} item(s).${p.renamed.length ? ` ${p.renamed.length} got "(imported)" added to the name, because one by that name was already here.` : ""}`);
+      location.hash = p.recipes.length ? "#/dishes" : "#/ingredients";
     },
     // The unit picked beside a count box: remembered for the item. A number already there is turned into it, so what's
     // in stock and its value stay as they were.
@@ -3470,7 +3967,8 @@
       const row = data.counts.find((c) => c.month === month && c[field] === id), qty = row ? parseNum(row.qty) : null;
       const priced = qty == null ? null : pricedAmount(it, qty, row.unit || it.base), one = pricedAmount(it, 1, unit);
       await write(async () => {
-        await patch(table, id, { count_unit: unit === it.base ? null : unit });
+        // Barback keeps a pick of the priced unit too: left empty, a bottle goes back to being counted in bottles.
+        if (isAdmin()) await patch(table, id, { count_unit: unit === it.base && !BAR ? null : unit });
         if (priced != null && one) await patch("counts", row.id, { qty: +(priced / one).toFixed(6), unit });
       });
     },
@@ -3611,7 +4109,7 @@
   /** After you edit a recipe yourself, its current cost becomes the "last seen" one: alerts are for price
    * moves, not for your own changes. Recipes that use it still get flagged. */
   async function settle(recipeId) {
-    coster = Costing.create(data);
+    coster = Costing.create(BAR ? withKitchen() : data);
     const cost = round4(coster.recipeCost(recipeId).perYield);
     const r = get("recipes", recipeId);
     if (r && r.ack_cost !== cost) await patch("recipes", recipeId, { ack_cost: cost });
@@ -3622,6 +4120,7 @@
   main.addEventListener("change", async (e) => {
     const el = e.target.closest("[data-act]");
     if (!el || !actions[el.dataset.act]) return;
+    if (isEmployee() && !employeeMay(el.dataset.act, el)) return render();
     const key = draftable(el) ? draftKey(el) : null;
     write.failed = false;
     if (key) saving.add(key);
@@ -3656,6 +4155,7 @@
   main.addEventListener("click", (e) => {
     if (e.target.closest(".btn--back")) render.goingBack = true;
     const el = e.target.closest("button[data-act]");
+    if (el && isEmployee() && !employeeMay(el.dataset.act, el)) return;
     if (el && actions[el.dataset.act]) { e.preventDefault(); write.failed = false; actions[el.dataset.act](el); }
   });
   /* ---------- moving a recipe line ---------- */
@@ -3893,6 +4393,7 @@
    */
   async function menuFiles(name, picks) {
     const m = menuModel(name), base = MenuFile.fileName(name), files = [], skipped = [], d = settings.drive || {};
+    m.say = say; // the bar's words in Barback's files
     const say = (t) => toast(t);
     if (picks.list) files.push({ path: `${base} – menu list.xlsx`, data: await MenuFile.menuXlsx(m), mime: MenuFile.XLSX_TYPE });
     if (picks.print) {
@@ -3946,7 +4447,7 @@
   /* ---------- Commis: the welcome page (sign in, sign up, forgot password) ---------- */
   const authView = { mode: "in", note: "" };
   // Commis's Terms of Use (sites/commis/pages), French first. Asked once, when signing up; the version says which one was accepted.
-  const TERMS_VERSION = "2026-11-04";
+  const TERMS_VERSION = "2026-11-07";
   const termsLinks = `<a href="conditions.html" target="_blank" rel="noopener" lang="fr">Conditions d'utilisation</a> / <a href="terms.html" target="_blank" rel="noopener">Terms of Use</a>`;
   const privacyLinks = `<a href="confidentialite.html" target="_blank" rel="noopener" lang="fr">Politique de confidentialité</a> / <a href="privacy.html" target="_blank" rel="noopener">Privacy Policy</a>`;
   // Commis's public homepage (sites/commis/home.html): in the page from the start, then wrapped around the sign-in box.
@@ -3966,7 +4467,7 @@
         <p class="welcome__links"><button class="linkish" data-auth="forgot">Forgot your password?</button>
           <span>New here? <button class="linkish" data-auth="up">Create an account</button></span></p>`,
       up: `<h2>Create your account</h2>
-        <p class="muted">Free for restaurants. One account per restaurant; use your work email or your own.</p>
+        <p class="muted">Free for restaurants. One account per restaurant; use your work email or your own. A restaurant gave you access? Sign up with the email they used, and put your own name or restaurant here.</p>
         <form data-form="sign-up" class="welcome__form">
           <label class="block">Restaurant<input class="in" name="restaurant" autocomplete="organization" required /></label>${email}
           <label class="block">Password <span class="muted small">(8 characters or more)</span><input class="in" type="password" name="password" minlength="8" autocomplete="new-password" required /></label>
@@ -4001,6 +4502,9 @@
 
   async function start() {
     store = Store.current();
+    const side = chooseAccount(await store.loadTeam());
+    // Commis's welcome page is the kitchen's. Barback needs someone signed in.
+    Store.setProject(SITE.commis && Auth.configured() && !Auth.signedIn() ? "kitchen" : side);
     // Commis: the restaurant's name under the site's name once signed in.
     $(".brand__sub").textContent = (SITE.commis && Auth.signedIn() && Auth.restaurant()) || SITE.sub;
     const mode = $("#mode");
@@ -4009,15 +4513,23 @@
       mode.hidden = false;
       mode.innerHTML = Auth.configured() ? `Not signed in: showing this browser's data. <a href="#/settings">Sign in</a>` : `Local mode: data is saved in this browser only. <a href="#/settings">Settings</a>`;
     } else mode.hidden = true;
-    try { data = await store.loadAll(); }
+    let loaded = null, saved = {};
+    try { loaded = await store.loadAll(); }
     catch (e) { toast(e.message, true); }
-    try { settings = await store.getSettings(); settingsProblem = ""; }
+    try { saved = await store.getSettings(); settingsProblem = ""; }
     catch (e) {
-      settings = {};
+      saved = {};
       settingsProblem = "Run the updated supabase/schema.sql once in Supabase: it adds the small table that remembers your Drive folder and sheet.";
     }
+    // All at once, so nothing is drawn from one set of records with the other's costs. The first time in Barback, it starts with a bar's sections.
+    const first = Store.project() === "barback" && !saved.categories && !settingsProblem;
+    try { people = Store.teamsReady() && isAdmin() ? await store.people(Store.account()) : []; } catch { people = []; }
+    if (loaded) data = loaded;
+    settings = first ? { ...saved, ...Barback.firstSettings() } : saved;
+    applyProject();
     rebuild();
     render();
+    if (first) saveSettings(settings);
   }
   let resizing = null;
   window.addEventListener("resize", () => { clearTimeout(resizing); resizing = setTimeout(drawHistChart, 150); });
@@ -4029,6 +4541,9 @@
   new MutationObserver(fitLines).observe(document.documentElement, { attributes: true, attributeFilter: ["data-size", "data-dyslexia"] });
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(fitLines);
   badgeRoom();
+  $("#projectSwitch").addEventListener("click", (e) => { const b = e.target.closest("[data-project]"); if (b) switchProject(b.dataset.project); });
+  $("#accountSwitch").addEventListener("change", (e) => goTo(e.target.value));
+  $("#invites").addEventListener("click", (e) => { const b = e.target.closest("[data-invite]"); if (b) answerInvite(b); });
   // The site's own name in the header and the tab.
   $(".brand__name").textContent = SITE.name;
   document.title = SITE.app;

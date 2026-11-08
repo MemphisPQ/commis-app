@@ -11,7 +11,7 @@ window.COSTING_CONFIG = {
   googleProjectNumber: "",
 
   site: {
-    edition: "commis", name: "Commis", sub: "Costing & inventory",
+    edition: "commis", name: "Commis", sub: "Costing & inventory", barback: true, teams: true,
     // Optional tip: the address of your tip page. While it's empty, the button, card and link stay hidden.
     support: "",
   },
