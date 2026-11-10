@@ -21,9 +21,13 @@
   const isQbHead = (l) => QB_HEAD.test(l) && /QT|QUANTIT/.test(l) && /TAUX|RATE|PRIX|PRICE/.test(l) && /MONTANT|AMOUNT/.test(l);
   const textLines = (t) => t.split("\n").map((s) => s.normalize("NFC").trim()).filter(Boolean);
   const knownName = (s) => (SUPPLIERS.find(([, re]) => re.test(s)) || [])[0];
-  // The sender is the line after "Page 1 of 1": "Brin-Nature Inc.", "Redfroglab Inc. / Lab. Grenouille".
+  // The sender is the line after "Page 1 of 1": "Brin-Nature Inc.", "Redfroglab Inc. / Lab. Grenouille". Since November 2026 QuickBooks
+  // can print "Page 1 of 1" at the bottom, below the items: then the sender is the first line of the page.
   function qbName(t) {
-    const L = textLines(t), raw = L[L.findIndex((l) => /^Page \d+ (of|de|sur) \d+$/i.test(l)) + 1] || "";
+    const L = textLines(t), page = /^Page \d+ (of|de|sur) \d+$/i;
+    const at = L.findIndex((l) => page.test(l)), head = L.findIndex(isQbHead);
+    const onTop = at >= 0 && at < L.length - 1 && (head < 0 || at < head);
+    const raw = (onTop ? L[at + 1] : L.find((l) => !page.test(l))) || "";
     return knownName(raw) || raw.split(" / ")[0].replace(/[,\s]+(inc|lt[ée]e|ltd|llc|enr|s\.?e\.?n\.?c\.?)\.?$/i, "").trim();
   }
   // 15/10/2026, 06/17/2026 or 2026-10-07. When it could be either, the due date says which (it's a few weeks later), then the language.

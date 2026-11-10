@@ -42,6 +42,20 @@ test("Hector: a line that can't be read shows up as a gap against the subtotal",
   assert.strictEqual(r.missed, 9.2);
 });
 
+test("QuickBooks with \"Page 1 of 1\" at the bottom (since November 2026) still knows who sent it, and reads every line", () => {
+  // Made up, in the layout Chez Nino's invoices came in from November 2026.
+  const r = Invoices.read([
+    "", " ", "Chez Nino", "1 Place Exemple", "Montréal QC  H0H0H0", "FACTURE", "FACTURÉ À", "Restaurant Exemple",
+    "Nº DE FACTURE12345", "DATE09/11/2026", "MODALITÉSNet 30", "ÉCHÉANCE09/12/2026",
+    "PRODUITSDESCRIPTIONQTÉTAUXMONTANT", "Chou plat (unité)14.504.50", "Tomates (lbs)2.53.007.50", " ",
+    "TOTAL PARTIEL12.00", "TPS @ 0%0.00", "TOTAL12.00", "SOLDE À PAYER", "$12.00", "Page 1 of 1",
+  ].join("\n"));
+  assert.strictEqual(r.supplier, "Chez Nino");
+  assert.strictEqual(r.date, "2026-11-09");
+  assert.deepStrictEqual(r.lines.map((l) => [l.item, l.qty, l.price, l.total]), [["Chou plat (unité)", 1, 4.5, 4.5], ["Tomates (lbs)", 2.5, 3, 7.5]]);
+  assert.strictEqual(r.missed, 0);
+});
+
 test("Chez Nino: a name over two lines with its numbers on a third, and the subtotal check", () => {
   const r = Invoices.read([
     "Chez Nino", "DATE 15/10/2026", "PRODUITSDESCRIPTIONQTÉTAUXMONTANT",
