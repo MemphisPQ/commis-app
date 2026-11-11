@@ -1305,6 +1305,8 @@
       // …and anything it has a measure for (1 recipe = 12 kg = 66 portions).
       const measured = ing ? coster.countChoices(ing, false).map((m) => Units.baseOf(m)) : [];
       units = ing ? RECIPE_UNITS.filter((u) => Units.baseOf(u) === ing.base || byWeight(u) || measured.includes(Units.baseOf(u))) : RECIPE_UNITS;
+      // …and its own sizes: 3 sheets of pastry.
+      if (ing) units = [...units, ...Costing.sizeNames(ing).filter((u) => !units.includes(u))];
       if (BAR && ing && Barback.bottleMl(ing)) units = units.filter((u) => u !== "recipe"); // a bottle is the measure, not a batch
       const offers = ing ? coster.offersFor(ing.id) : [];
       const def = ing ? coster.defaultOffer(ing.id) : null;
@@ -1360,6 +1362,39 @@
       if (i.base === "portion" && portions) list.unshift({ qty: each * portions.qty, unit: "kg" });
     }
     return list;
+  }
+
+  /** How an item comes, boxes inside boxes: 1 case = 24 pack, 1 pack = 454 g, 1 pack = 15 sheet. Each row names one size by another. */
+  const SIZE_UNITS = ["g", "kg", "ml", "L", "unit"];
+  const amountWords = (qty, unit) => {
+    const b = Units.baseOf(unit), inBase = Units.convert(qty, unit, b);
+    if (b === "kg") return inBase < 1 ? `${numText(+(inBase * 1000).toPrecision(4))} g` : `${numText(+inBase.toPrecision(4))} kg`;
+    if (b === "L") return inBase < 1 ? `${numText(+(inBase * 1000).toPrecision(4))} ml` : `${numText(+inBase.toPrecision(4))} L`;
+    return `${numText(+qty.toPrecision(4))} ${unitLabel(unit)}`;
+  };
+  function sizesCard(i) {
+    const rows = Costing.savedSizes(i), names = Costing.sizeNames(i);
+    const row = (r, k) => {
+      const isNew = k >= rows.length;
+      const at = (f) => `data-k="sz-${k}-${f}" data-act="size-field" data-row="${k}" data-field="${f}" data-id="${esc(i.id)}"`;
+      return `<div class="sizes__row"${isNew ? " data-new" : ""}><span class="sizes__one">1</span>
+        <input class="in in--size" ${at("per")} value="${esc(r.per)}" placeholder="${isNew && rows.length ? "another size" : "case"}" aria-label="${isNew ? "A new size: its name" : "Name of this size"}" />
+        <span class="measures__eq" aria-hidden="true">=</span>
+        <input class="in in--num" inputmode="decimal" ${at("qty")} value="${esc(numText(r.qty))}" placeholder="${isNew && rows.length ? "how many" : "24"}" aria-label="How many" />
+        <input class="in in--size" ${at("unit")} list="dl-size-units" data-suggest-all value="${esc(r.unit || "")}" placeholder="${isNew && rows.length ? "of what" : "pack"}" aria-label="Of what: g, kg, ml, L, unit, another size, or a new name" />
+        ${isNew ? "" : `<button class="icon icon--x" data-act="size-remove" data-row="${k}" data-id="${esc(i.id)}" aria-label="Remove 1 ${esc(r.per)}">×</button>`}</div>`;
+    };
+    const sums = names.map((n) => { const s = Costing.sizeIn(i, n); return `1 ${esc(n)} = ${esc(amountWords(s.qty, s.unit))}`; });
+    const k = "sizes-" + i.id, open = detailsOpen.has(k) ? detailsOpen.get(k) : rows.length > 0;
+    return `<section class="card card--flat">
+      <details class="fold" data-k="${esc(k)}"${open ? " open" : ""}>
+        <summary><h2>How it comes</h2><span class="small muted">${rows.length ? esc(names.join(", ")) : "cases, packs, sheets…"}</span></summary>
+        <p class="hint">Boxes inside boxes, as it's sent. For frozen pastry: 1 case = 24 pack, 1 pack = 454 g, 1 pack = 15 sheet. A supplier price can then be per case, a recipe can use sheets, and the count can be in packs.</p>
+        <datalist id="dl-size-units">${[...SIZE_UNITS, ...names].map((u) => `<option value="${esc(u)}"></option>`).join("")}</datalist>
+        <div class="sizes">${[...rows, { per: "", qty: null, unit: "" }].map(row).join("")}</div>
+        ${sums.length ? `<p class="small muted sizes__sums">${sums.join(" · ")}</p>` : ""}
+      </details>
+    </section>`;
   }
 
   /** The row of boxes. opts.costPer: what a prep's cost is shown per. opts.each: the weight of a portion known another way. */
@@ -1445,7 +1480,9 @@
   /** Saves an item's measures, keeping "1 recipe weighs" / "1 portion weighs" in step for everything that reads them. */
   async function saveItemMeasures(i, list) {
     if (Store.part16Old()) { toast(PART16_NOTE, true); return render(); }
-    const changes = { measures: list.length ? list : null };
+    // The item's own sizes are kept as they are.
+    const all = [...list, ...(i.measures || []).filter((m) => m && m.per)];
+    const changes = { measures: all.length ? all : null };
     const w = list.find((m) => Units.baseOf(m.unit) === "kg"), n = list.find((m) => m.unit === "portion");
     if (i.base === "recipe") changes.each_kg = w ? Units.convert(w.qty, w.unit, "kg") : null;
     if (i.base === "portion") changes.each_kg = w && n ? Units.convert(w.qty, w.unit, "kg") / n.qty : null;
@@ -1629,7 +1666,7 @@
         <td><input class="in" data-k="o-item-${o.id}" data-act="offer-field" data-field="supplier_item" data-id="${esc(o.id)}" value="${esc(o.supplier_item || "")}" placeholder="${BAR ? "e.g. GIN BEEFEATER 750 ML" : "e.g. OIGNON JAUNE 50LB"}" /></td>
         <td class="num">${moneyInput(`data-k="o-cost-${o.id}" data-act="offer-field" data-field="pack_cost" data-id="${esc(o.id)}" value="${esc(numText(o.pack_cost))}" aria-label="Pack price"`)}</td>
         <td class="num nowrap"><input class="in in--num" inputmode="decimal" data-k="o-qty-${o.id}" data-act="offer-field" data-field="pack_qty" data-id="${esc(o.id)}" value="${esc(numText(o.pack_qty))}" aria-label="Pack size" />
-          <select class="in" data-k="o-unit-${o.id}" data-act="offer-field" data-field="pack_unit" data-id="${esc(o.id)}" aria-label="Pack unit">${ALL_UNITS.map((u) => `<option value="${u}"${o.pack_unit === u ? " selected" : ""}>${esc(unitLabel(u))}</option>`).join("")}</select></td>
+          <select class="in" data-k="o-unit-${o.id}" data-act="offer-field" data-field="pack_unit" data-id="${esc(o.id)}" aria-label="Pack unit">${[...new Set([...ALL_UNITS, ...Costing.sizeNames(i), o.pack_unit].filter(Boolean))].map((u) => `<option value="${esc(u)}"${o.pack_unit === u ? " selected" : ""}>${esc(unitLabel(u))}</option>`).join("")}</select></td>
         <td class="num"><strong>${price == null ? `<span class="warn">—</span>` : money(price, true) + per(i.base)}</strong></td>
         <td class="muted nowrap">${esc(o.updated_at || "")}</td>
         <td><button class="icon icon--x" data-act="delete-offer" data-id="${esc(o.id)}" aria-label="Delete this price">×</button></td>
@@ -1674,6 +1711,7 @@
       ${isPrepped(i) ? `<section class="card card--flat"><h2>Price lock</h2>
         ${lockBox({ kind: "ingredient", id: i.id, unit: i.base, locked: parseNum(i.locked_price), at: i.locked_at, live: (coster.liveOffer(i.id) || {}).price })}</section>` : ""}
 
+      ${sizesCard(i)}
       ${estimatedHere ? `<p class="note">Type your best estimate below. It's used in costs right away, flagged until an administrator double checks it. After that, only they can change it.</p>` : ""}
       <h2>Supplier prices</h2>
       <p class="hint">The ticked price is the one recipes use (a recipe line can still pick another). "Name on invoice" is how the supplier writes it, for reading invoices later.</p>
@@ -3302,6 +3340,56 @@
       }
       if (isRecipe) return saveRecipeMeasures(x, list, costPer, relabel);
       return saveItemMeasures(x, list);
+    },
+    // An item's own sizes: a row's name, how many and of what. A name changed here changes on its recipe lines, prices and counts too.
+    async "size-field"(el) {
+      const i = get("ingredients", el.dataset.id), k = +el.dataset.row, box = el.closest(".sizes__row");
+      if (!i || !box) return render();
+      if (Store.part16Old()) { toast(PART16_NOTE, true); return render(); }
+      const rows = Costing.savedSizes(i).map((r) => ({ ...r }));
+      const per = box.querySelector('[data-field="per"]').value.trim(), qtyText = box.querySelector('[data-field="qty"]').value.trim(), qty = parseNum(qtyText);
+      // "G" or "grammes" is g; a word that isn't a unit is a size's name ("pack", "sheet", "case").
+      const unitText = box.querySelector('[data-field="unit"]').value.trim(), real = Units.parseUnit(unitText);
+      const unit = real && !Units.isVague(unitText) ? real : unitText;
+      // A new row waits until it has its name, its number and what it's made of.
+      if (k >= rows.length && (!per || !qtyText || !unitText)) return;
+      if (!per || !(qty > 0) || !unit) { toast("A size needs a name, a number above 0 and what it's made of. To take one away, press ×.", true); return render(); }
+      if (Units.UNITS[per] || /^(recipe|portion)s?$/i.test(per)) { toast(`"${per}" is already a unit here. Give the size its own name, like case, pack or sheet.`, true); return render(); }
+      if (per === unit) { toast("A size can't be made of itself.", true); return render(); }
+      if (rows.some((r, n) => n !== k && r.per === per && r.unit === unit)) { toast(`There's already a row for 1 ${per} = … ${unit}.`, true); return render(); }
+      const before = Costing.sizeNames(i), was = rows[k];
+      rows[k] = { per, qty, unit };
+      // One name swapped for another, on either side of the "=": the other rows and whatever used it follow.
+      const oldName = was && was.per !== per ? was.per : was && was.unit !== unit && !Units.UNITS[was.unit] ? was.unit : null;
+      const newName = oldName === (was && was.per) ? per : unit;
+      const swap = (r) => (oldName && r === oldName && !Units.UNITS[newName] ? newName : r);
+      const next = rows.map((r, n) => (n === k ? r : { ...r, per: swap(r.per), unit: swap(r.unit) }));
+      const measures = [...(i.measures || []).filter((m) => m && !m.per), ...next];
+      const reaches = (n) => Units.UNITS[n] || Costing.sizeIn({ measures }, n);
+      if (!next.every((r) => reaches(r.per) && reaches(r.unit))) { toast(`Name it by a weight, a volume, units or another size here, so ${per} comes to something.`, true); return render(); }
+      const old = oldName && before.includes(oldName) && !Costing.sizeIn({ measures }, oldName) && !Units.UNITS[newName] ? oldName : null;
+      await write(async () => {
+        await patch("ingredients", i.id, { measures });
+        // Renamed: what used the old name follows.
+        if (old) {
+          for (const l of data.lines.filter((x) => x.ingredient_id === i.id && x.unit === old)) await patch("lines", l.id, { unit: newName });
+          for (const o of data.offers.filter((x) => x.ingredient_id === i.id && x.pack_unit === old)) await patch("offers", o.id, { pack_unit: newName });
+          for (const c of data.counts.filter((x) => x.ingredient_id === i.id && x.unit === old)) await patch("counts", c.id, { unit: newName });
+          if (i.count_unit === old) await patch("ingredients", i.id, { count_unit: newName });
+        }
+      });
+    },
+    async "size-remove"(el) {
+      const i = get("ingredients", el.dataset.id), k = +el.dataset.row;
+      const rows = Costing.savedSizes(i), gone = rows[k];
+      if (!gone) return render();
+      const measures = [...(i.measures || []).filter((m) => m && !m.per), ...rows.filter((r, n) => n !== k)];
+      // What would stop working: names that no longer come to anything, and what uses them.
+      const lost = Costing.sizeNames(i).filter((n) => !Costing.sizeIn({ measures }, n));
+      const users = data.lines.filter((l) => l.ingredient_id === i.id && lost.includes(l.unit)).length + data.offers.filter((o) => o.ingredient_id === i.id && lost.includes(o.pack_unit)).length;
+      const msg = users ? `${users} recipe line(s) or price(s) use ${lost.join(", ")}. Without this row they can't be costed until they're changed. Remove it anyway?` : `Remove 1 ${gone.per} = ${numText(gone.qty)} ${gone.unit}?`;
+      if (!(await ask(msg, { ok: "Remove", danger: !!users }))) return;
+      await write(() => patch("ingredients", i.id, { measures: measures.length ? measures : null }));
     },
     async "measure-costper"(el) {
       const r = get("recipes", el.dataset.id);

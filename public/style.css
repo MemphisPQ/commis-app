@@ -440,6 +440,13 @@ select.count-unit { padding-left: 8px; padding-right: 2px; }
 .count-tare { display: block; margin-top: 4px; white-space: normal; font-size: 0.82rem; color: var(--muted); text-align: right; }
 .in--tare { width: calc(44px * var(--box)); min-height: 28px; padding: 1px 4px; text-align: center; }
 .in--open { width: calc(84px * var(--box)); min-height: 30px; padding: 1px 6px; text-align: right; }
+.sizes { display: grid; gap: 8px; margin-top: 6px; }
+.sizes__row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.sizes__row .in--num { width: calc(84px * var(--box)); }
+.sizes__row select.in { width: auto; min-width: calc(84px * var(--box)); max-width: 100%; }
+.in--size { width: calc(120px * var(--box)); max-width: 100%; }
+.sizes__one { font-weight: 700; }
+.sizes__sums { margin: 10px 0 0; }
 .tag--kitchen { background: var(--brand-soft); color: var(--brand); }
 .tag--bar { background: #e3edf8; color: #1d5fa8; }
 .bottle__boxes { display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center; }

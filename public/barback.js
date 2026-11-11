@@ -25,14 +25,14 @@
   /** One bottle of an item, in ml, from its measures. null when it has no size. */
   function bottleMl(item) {
     const list = item && Array.isArray(item.measures) ? item.measures : [];
-    const one = list.find((m) => m && m.unit === "bottle"), vol = list.find((m) => m && Units.baseOf(m.unit) === "L");
+    const one = list.find((m) => m && !m.per && m.unit === "bottle"), vol = list.find((m) => m && !m.per && Units.baseOf(m.unit) === "L");
     if (!one || !vol || !(+one.qty > 0) || !(+vol.qty > 0)) return null;
     return +(Units.convert(+vol.qty, vol.unit, "ml") / +one.qty).toFixed(3);
   }
 
   /** An item's measures with this bottle size. No size takes it off; anything else on the list stays. */
   function withBottleSize(item, ml) {
-    const rest = (item && Array.isArray(item.measures) ? item.measures : []).filter((m) => m && m.unit !== "bottle" && Units.baseOf(m.unit) !== "L");
+    const rest = (item && Array.isArray(item.measures) ? item.measures : []).filter((m) => m && (m.per || (m.unit !== "bottle" && Units.baseOf(m.unit) !== "L")));
     if (!(ml > 0)) return rest.length ? rest : null;
     return [{ qty: +(ml / 1000).toFixed(6), unit: "L" }, { qty: 1, unit: "bottle" }, ...rest];
   }

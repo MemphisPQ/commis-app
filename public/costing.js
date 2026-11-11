@@ -22,9 +22,33 @@
   /** Turns `qty fromUnit` into the ingredient's base unit, using the weight of one unit when needed (3 celeriac -> kg). */
   const amountIn = Units.amountIn;
 
-  /** The measures saved in `measures`: what one recipe comes to. */
-  const savedMeasures = (x) => (x && Array.isArray(x.measures) ? x.measures : [])
+  /** The measures saved in `measures`: what one recipe comes to. (An item's own sizes are kept there too, with `per`: see below.) */
+  const savedMeasures = (x) => (x && Array.isArray(x.measures) ? x.measures : []).filter((m) => !(m && m.per))
     .map((m) => ({ qty: num(m && m.qty), unit: m && m.unit })).filter((m) => m.qty > 0 && m.unit && m.unit !== "recipe");
+
+  /* ---------- an item's own sizes ---------- */
+  // How it comes, boxes inside boxes, with names the supplier or the kitchen uses: 1 case = 24 pack, 1 pack = 454 g, 1 pack = 15 sheet.
+  // Saved in the item's measures as { per: "case", qty: 24, unit: "pack" }. A price, a recipe line and the count can use any of them.
+  const savedSizes = (x) => (x && Array.isArray(x.measures) ? x.measures : []).filter((m) => m && typeof m.per === "string" && m.per.trim())
+    .map((m) => ({ per: m.per.trim(), qty: num(m.qty), unit: m.unit })).filter((m) => m.qty > 0 && m.unit);
+  /** One of an item's sizes in a unit everyone knows, following the sizes as far as they go: "case" -> 10896 g. null when it doesn't get there. */
+  function sizeIn(x, name) {
+    if (!name || Units.UNITS[name]) return null;
+    const ways = new Map(), add = (a, f, b) => { if (!ways.has(a)) ways.set(a, []); ways.get(a).push([f, b]); };
+    for (const r of savedSizes(x)) { add(r.per, r.qty, r.unit); add(r.unit, 1 / r.qty, r.per); }
+    const seen = new Set([name]);
+    for (let now = [[name, 1]]; now.length;) {
+      const next = [];
+      for (const [u, f] of now) {
+        if (Units.UNITS[u]) return { qty: f, unit: u };
+        for (const [g, v] of ways.get(u) || []) if (!seen.has(v)) { seen.add(v); next.push([v, f * g]); }
+      }
+      now = next;
+    }
+    return null;
+  }
+  /** The names of an item's sizes that lead somewhere, in the order they were written. */
+  const sizeNames = (x) => [...new Set(savedSizes(x).flatMap((r) => [r.per, r.unit]))].filter((n) => !Units.UNITS[n] && sizeIn(x, n));
 
   /** Everything one batch of a prep comes to: what it makes, its other measure, any more. Never "recipe": that's the batch itself. */
   function recipeMeasures(r) {
@@ -92,8 +116,10 @@
     }
     for (const list of linesByRecipe.values()) list.sort((a, b) => (a.pos || 0) - (b.pos || 0));
 
-    /** A pack size in an item's base unit: the same kind of unit, its own measures, the weight of one piece. */
+    /** A pack size in an item's base unit: the same kind of unit, its own measures, the weight of one piece, or one of its own sizes. */
     function packAmount(qty, unit, ing) {
+      const size = sizeIn(ing, unit);
+      if (size) return packAmount(qty * size.qty, size.unit, ing);
       const own = Units.convert(qty, unit, ing.base) ?? throughRecipe(qty, unit, ing.base, savedMeasures(ing));
       return own ?? amountIn(qty, unit, ing.base, num(ing.each_kg));
     }
@@ -264,6 +290,8 @@
      * weight of one piece; the measures of the prep it's made from, where one recipe is the batch its price is for; a
      * recipe, a portion or a bunch as one unit. null when it can't be worked out. */
     function itemAmount(ing, qty, unit) {
+      const size = sizeIn(ing, unit);
+      if (size) return itemAmount(ing, qty * size.qty, size.unit);
       const base = ing.base, each = num(ing.each_kg), own = savedMeasures(ing);
       const direct = Units.convert(qty, unit, base);
       if (direct != null) return direct;
@@ -300,7 +328,9 @@
       if (isPrep || linked || known.length) seen.push("recipe");
       if (!isPrep && num(x.each_kg) > 0) seen.push(Units.countable(base) ? "kg" : base === "kg" ? "unit" : "");
       const others = ["kg", "L", "portion", "unit", "bunch", "recipe", "bottle"].filter((u) => u !== base && seen.includes(u) && convert(u) > 0);
-      return [base, ...others];
+      // An item's own sizes too: count the pastry in packs or cases.
+      const own = isPrep ? [] : sizeNames(x).filter((u) => convert(u) > 0);
+      return [base, ...others, ...own];
     }
     function sameMeasure(qty, from, to) {
       if (!to) return null;
@@ -366,7 +396,7 @@
     return { offerPrice, offersFor, defaultOffer, liveOffer, chosenOffer, linkedOffer, recipeCost, subAmount, itemAmount, packAmount, batchSize, itemMeasures, countChoices, summary, usedBy, ingredients, recipes, linesByRecipe };
   }
 
-  const api = { create, amountIn, savedMeasures, recipeMeasures, withPortionSize, netWeight, lastOfEachDay, DEFAULT_MULTIPLIER };
+  const api = { create, amountIn, savedMeasures, savedSizes, sizeIn, sizeNames, recipeMeasures, withPortionSize, netWeight, lastOfEachDay, DEFAULT_MULTIPLIER };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.Costing = api;
 })(typeof window !== "undefined" ? window : globalThis);
