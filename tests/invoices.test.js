@@ -90,3 +90,29 @@ test("packs in gallons, and words run together on an invoice", () => {
   assert.deepStrictEqual(Invoices.packOf({ uom: "CA", item: "Pommes Gala 3 lb" }, Units), { qty: 3, unit: "lb" });
   assert.ok(Invoices.words("16 x 1.5 kPoulet Entier Attaché").has("poulet"));
 });
+
+// Made up: a fee spread over the items it came with, by each line's amount.
+test("a delivery fee spread over the other lines: each price takes its share by amount, and the fee isn't a price", () => {
+  const lines = [
+    { item: "Pain Test", qty: 20, price: 5, total: 100 },
+    { item: "Miche Test", qty: 2, price: 50, total: 100 },
+    { item: "Consigne", qty: 1, price: 10, total: 10 },
+    { item: "LIVRAISON 20,00$", qty: 1, price: 20, total: 20 },
+  ];
+  const fee = (l) => /LIVRAISON/.test(l.item), notDeposit = (l) => l.item !== "Consigne";
+  const r = Invoices.spreadFees(lines, fee, notDeposit);
+  assert.strictEqual(r.fee, 20);
+  assert.strictEqual(r.rate, 0.1, "$20 over $200 of goods: 10% on each");
+  assert.deepStrictEqual(r.prices, [5.5, 55, 10, 20], "the deposit and the fee keep their own price");
+  // The lines with their share add up to what was paid for them.
+  assert.strictEqual(20 * r.prices[0] + 2 * r.prices[1], 220);
+  // Nothing spread: every price stays.
+  assert.deepStrictEqual(Invoices.spreadFees(lines, () => false).prices, [5, 50, 10, 20]);
+  // Nothing to spread it over: no share, no dividing by zero.
+  assert.deepStrictEqual(Invoices.spreadFees([lines[3]], fee), { fee: 20, rate: 0, prices: [20] });
+});
+
+test("what reads like a fee, in French or English, and what doesn't", () => {
+  for (const s of ["LIVRAISON 27,00$", "Frais de livraison", "Delivery charge", "Transport", "Fuel surcharge", "Frais de port", "Shipping"]) assert.ok(Invoices.looksLikeFee(s), s);
+  for (const s of ["Saumon frais", "Froment Tradition sur Poolish", "Fromage frais", "Pain"]) assert.ok(!Invoices.looksLikeFee(s), s);
+});

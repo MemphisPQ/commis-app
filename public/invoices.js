@@ -11,7 +11,7 @@
   const SUPPLIERS = [
     ["Can-Am", /can-am/i], ["Chez Nino", /chez nino/i], ["La Mer", /la mer\b|lamer/i], ["Viandex", /viandex/i],
     ["BrinNature", /brin-?nature/i], ["Champignon Inc", /pieds de champignon/i], ["Hector Larivée", /hector lariv/i],
-    ["Multiplus", /AGENT PERCEPTEUR/], ["Amazon.ca", /amazon\.com\.ca/i],
+    ["Multiplus", /AGENT PERCEPTEUR/], ["Amazon.ca", /amazon\.com\.ca/i], ["Boulangerie Guillaume", /boulangerie guillaume|guillau\.me/i],
   ];
 
   /* ---------- layouts many businesses share: one reader, whoever sent the invoice ---------- */
@@ -346,6 +346,33 @@
       }
       return out;
     },
+    // A cash-register invoice. Under "No produitArticlesQtéPrixRabaisMontant", a row is product number | name | quantity | price |
+    // discount | amount, all run together: "100001Miche Test12$5.00$0.00$60.00". The name can hold a "$"
+    // ("LIVRAISON 20,00$1$20.00$0.00$20.00", the delivery fee, which the subtotal counts) or end in a number of its own.
+    "Boulangerie Guillaume"(t) {
+      const d = t.match(/Date:\s*(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+      // Month first (11/12/2026 came on November 12), unless the first number can't be a month.
+      const date = d ? (+d[1] > 12 ? iso(d[3], d[2], d[1]) : iso(d[3], d[1], d[2])) : null;
+      const L = textLines(t), head = L.findIndex((l) => /^No produit/i.test(l)), out = [];
+      const money = (s) => n(s.replace(/,/g, ""));
+      for (const l of head < 0 ? L : L.slice(head + 1)) {
+        const m = l.match(/^(.*)\$([\d,]*\.\d{2})\$([\d,]*\.\d{2})\$([\d,]*\.\d{2})$/);
+        const h = m && m[1].match(/^(\d*)(\D.*?)([\d.,]+)$/);   // the product number runs into the name, the quantity onto its end
+        if (!h) continue;
+        const price = money(m[2]), off = money(m[3]), total = money(m[4]);
+        if (!total) continue;   // something given for free has no price to learn
+        // The quantity: the shortest number at the end of the name that gives the amount.
+        const digits = h[3], fits = (q) => close(q * price - off, total) || close(q * (price - off), total);
+        let qty = null, name = h[2];
+        for (let k = digits.length - 1; k >= 0 && qty == null; k--) {
+          const s = digits.slice(k);
+          if (/^\d+([.,]\d+)?$/.test(s) && +n(s) > 0 && fits(n(s))) { qty = n(s); name = h[2] + digits.slice(0, k); }
+        }
+        if (qty == null) { if (!/^\d+([.,]\d+)?$/.test(digits)) continue; qty = n(digits); }
+        out.push({ date, item: name.trim(), code: h[1], qty, uom: "UN", price: off ? Math.round((total / qty) * 100) / 100 : price, total });
+      }
+      return out;
+    },
   };
 
 
@@ -401,6 +428,11 @@
       const i = L.findIndex((l) => /^Frais de transport/.test(l));
       const fee = i > 0 && alone(L[i - 1]) ? amount(L[i - 1]) : 0;
       return Math.round((owed - fee * 1.14975) * 100) / 100;
+    },
+    // No label: the row under the items has the total quantity, the total discount and the amount before taxes ("13$0.00$80.00").
+    "Boulangerie Guillaume"(t) {
+      const m = t.match(/^\s*\d+(?:[.,]\d+)?\$[\d,]*\.\d{2}\$(\d[\d,]*\.\d{2})\s*$/m);
+      return m ? amount(m[1]) : null;
     },
   };
 
@@ -503,6 +535,20 @@
   }
 
 
+  /** A line that reads like a charge for bringing the goods, not goods: delivery, transport, a fuel surcharge… ("frais" alone is fresh). */
+  const looksLikeFee = (item) => /livraison|deliver|transport|shipping|freight|\bfret\b|\bfuel\b|carburant|surcharge|manutention|handling|frais de (port|service|livraison)/i.test(fold(item));
+
+  /** Fees spread over the items they came with: each other line's price goes up by its share of the fees, by its amount (a $20 delivery on
+   * $200 of bread puts 10% on each loaf). isFee(l, k): the lines being spread. takes(l, k): lines that can take a share (not a
+   * deposit). Gives the fees' total, the rate and each line's price with its share (a fee line, or one that takes none, keeps its own). */
+  function spreadFees(lines, isFee, takes = () => true) {
+    const fee = lines.reduce((t, l, k) => t + (isFee(l, k) ? +l.total || 0 : 0), 0);
+    const gets = lines.map((l, k) => !isFee(l, k) && takes(l, k) && +l.total > 0);
+    const base = lines.reduce((t, l, k) => t + (gets[k] ? +l.total : 0), 0);
+    const rate = fee && base > 0 ? fee / base : 0;
+    return { fee: Math.round(fee * 100) / 100, rate, prices: lines.map((l, k) => (gets[k] && rate ? Math.round(+l.price * (1 + rate) * 10000) / 10000 : +l.price)) };
+  }
+
   /** How a line is remembered on a supplier price ("name on invoice"): its description and pack as printed. */
   const lineKey = (l) => (l.item + (l.format ? " " + l.format : "")).trim().slice(0, 120);
 
@@ -553,7 +599,7 @@
     return null;
   }
 
-  const api = { SUPPLIERS: SUPPLIERS.map((s) => s[0]), read, readers, words, share, perKg, billedAs, packOf, fold, lineKey, suggest, offerFor };
+  const api = { SUPPLIERS: SUPPLIERS.map((s) => s[0]), read, readers, words, share, perKg, billedAs, packOf, fold, lineKey, suggest, offerFor, looksLikeFee, spreadFees };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.Invoices = api;
 })(typeof window !== "undefined" ? window : globalThis);

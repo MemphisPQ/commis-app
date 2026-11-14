@@ -2183,7 +2183,7 @@
     const food = s.groups.find((g) => g.key === "food");
     const typed = (settings.stockMonths || {})[month] || {};
     const open = food && food.lastCounted ? food.last : null, shut = food && food.counted ? food.now : null;
-    const bought = Summary.spent(data.saved_invoices || [], month), extra = parseNum(typed.purchases);
+    const bought = Summary.spent(data.saved_invoices || [], month, settings.spendGroups), extra = parseNum(typed.purchases);
     const purchases = bought.food || extra != null ? bought.food + (extra || 0) : null;
     const lateCount = (data.saved_invoices || []).filter((x) => String(x.date).slice(0, 7) === month && savedAfterClosing(x, closed)).length;
     const fc = Summary.foodCost({ open, close: shut, purchases, sales: parseNum(typed.sales) });
@@ -2324,7 +2324,8 @@
     if (b.weighed) return `Bought ${numText(q)} ${b.word} at ${money(l.price)} per ${b.word}` + (l.total != null ? ` = ${money(l.total)}` : "");
     return q === 1 ? `Bought 1 ${b.word} at ${money(l.price)}` : `Bought ${numText(q)} ${manyOf(b.word, q)} × ${money(l.price)} each` + (l.total != null ? ` = ${money(l.total)}` : "");
   }
-  function priceIsFor(l) {
+  function priceIsFor(l, paid = l.price) {
+    l = { ...l, price: paid };
     const b = Invoices.billedAs(l);
     if (b.weighed) return `<div class="muted small inv-for">Priced by weight: ${money(l.price)} per ${b.word}.</div>`;
     const q = parseNum(l.packQty), u = l.packUnit;
@@ -2354,18 +2355,21 @@
   }
 
   /** One reviewed line: what it is in the app, the new price per kg/L/unit, and how that compares. */
-  function invoiceLineView(inv, l) {
+  function invoiceLineView(inv, l, k, fees = feesOf(inv)) {
+    if (isSpread(inv, l)) return { i: null, price: null, cur: null, diff: null, ready: false, fee: true, paid: +l.price };
+    const paid = fees.prices[k] != null ? fees.prices[k] : +l.price;
     const i = l.ingId && get("ingredients", l.ingId);
     const inBase = i && l.packQty ? coster.packAmount(+l.packQty, l.packUnit, i) : null;
-    const price = inBase ? l.price / (inBase * (parseNum(i.yield) || 1)) : null;
+    const price = inBase ? paid / (inBase * (parseNum(i.yield) || 1)) : null;
     const cur = i ? coster.defaultOffer(i.id) : null;
     const diff = price != null && cur ? price - cur.price : null;
-    return { i, price, cur, diff, ready: !!(i && price != null) };
+    return { i, price, cur, diff, ready: !!(i && price != null), paid };
   }
 
   function invoicesPage() {
     const cards = invoiceWork.map((inv, n) => {
-      const views = inv.lines.map((l) => invoiceLineView(inv, l));
+      const fees = feesOf(inv), views = inv.lines.map((l, k) => invoiceLineView(inv, l, k, fees));
+      const feeNames = inv.lines.filter((l) => isSpread(inv, l)).map((l) => `“${l.item}”`);
       const ready = inv.lines.filter((l, k) => l.include && views[k].ready).length;
       const rows = inv.lines.map((l, k) => {
         const v = views[k], i = v.i;
@@ -2373,15 +2377,28 @@
           : `<span class="chip ${v.diff > 0 ? "chip--up" : "chip--down"}">${v.diff > 0 ? "▲" : "▼"} ${money(Math.abs(v.diff), true)}</span>`;
         const how = { remembered: "remembered", price: "same price", name: "by name", new: "new item" }[l.how] || "";
         const counts = Store.part18Old() ? "" : `<label class="inv-counts">Counts as ${groupPicker(lineGroup(inv, l), `data-k="invg-${n}-${k}" data-act="inv-group" data-inv="${n}" data-line="${k}" aria-label="What ${esc(l.item)} counts as"`)}</label>`;
+        const onInvoice = `<td>${esc(l.item)}${l.format ? ` <span class="muted">${esc(l.format)}</span>` : ""}<div class="muted small">${esc(boughtText(l))}</div>`;
+        const spreadButton = (on) => `<button class="btn btn--small inv-spread" data-act="inv-spread" data-inv="${n}" data-line="${k}" data-on="${on ? 1 : 0}">${on ? "Spread over the other items' prices" : "Don't spread it"}</button>`;
+        // A fee spread over the others: it isn't a price of its own.
+        if (v.fee) return `<tr class="row--fee">
+          <td></td>
+          ${onInvoice}</td>
+          <td><div class="inv-fee"><strong>Spread over the other items' prices</strong>${fees.rate ? `: each costs ${pct(fees.rate)} more.` : ", but there's nothing to spread it over."}</div>
+            <div class="muted small">The spending still counts it as ${esc(groupLabel(lineGroup(inv, l)))}.</div>${spreadButton(false)}${counts}</td>
+          <td></td><td></td><td></td><td></td>
+        </tr>`;
+        const b = Invoices.billedAs(l), share = fees.rate && v.paid !== +l.price
+          ? `<div class="muted small inv-share">With its share of ${esc(feeNames.join(" and "))}: <strong>${money(v.paid, true)}${b.weighed ? ` per ${b.word}` : +l.qty === 1 ? "" : " each"}</strong></div>` : "";
         return `<tr class="${!l.include ? "row--off" : !v.ready ? "has-problem" : ""}">
           <td><input type="checkbox" data-act="inv-include" data-inv="${n}" data-line="${k}" ${l.include ? "checked" : ""} aria-label="Use this line" /></td>
-          <td>${esc(l.item)}${l.format ? ` <span class="muted">${esc(l.format)}</span>` : ""}<div class="muted small">${esc(boughtText(l))}</div></td>
+          ${onInvoice}${share}</td>
           <td><input class="in" list="dl-ingredients" data-k="inv-${n}-${k}" data-act="inv-item" data-inv="${n}" data-line="${k}" value="${esc(i ? i.name : "")}" placeholder="Pick your item" />
-            ${how ? `<div class="muted small">${how}</div>` : !i ? `<div class="problem">New: pick your item once, it's remembered</div>
-              <button class="btn btn--small inv-new" data-act="inv-new-item" data-inv="${n}" data-line="${k}">+ New item</button>` : ""}${counts}</td>
+            ${how ? `<div class="muted small">${how}</div>` : !i && mightSpread(inv, l) ? `<div class="muted small">A fee, not an item? Spread it over the others, so each item's price includes its share.</div>`
+              : !i ? `<div class="problem">New: pick your item once, it's remembered</div>
+              <button class="btn btn--small inv-new" data-act="inv-new-item" data-inv="${n}" data-line="${k}">+ New item</button>` : ""}${mightSpread(inv, l) ? spreadButton(true) : ""}${counts}</td>
           <td class="nowrap"><input class="in in--num" inputmode="decimal" data-k="invq-${n}-${k}" data-act="inv-pack" data-field="packQty" data-inv="${n}" data-line="${k}" value="${esc(numText(l.packQty))}" aria-label="How much one price is for" />
             <select class="in" data-k="invu-${n}-${k}" data-act="inv-pack" data-field="packUnit" data-inv="${n}" data-line="${k}" aria-label="Unit">${PACK_UNITS.map((u) => `<option value="${u}"${l.packUnit === u ? " selected" : ""}>${unitLabel(u)}</option>`).join("")}</select>
-            ${priceIsFor(l)}${i && v.price == null ? packHelp(inv, n, k, l, i) : ""}</td>
+            ${priceIsFor(l, v.paid)}${i && v.price == null ? packHelp(inv, n, k, l, i) : ""}</td>
           <td class="num">${v.price == null ? (i ? `<span class="warn">pack doesn't fit</span>` : "") : money(v.price, true) + per(i.base)}</td>
           <td class="num muted">${v.cur ? money(v.cur.price, true) : "—"}</td>
           <td>${chip}</td>
@@ -2426,6 +2443,7 @@
       </ol>
       <p class="hint">Readers for: ${Invoices.SUPPLIERS.join(", ")}, plus any supplier that sends QuickBooks invoices or takes orders through Pepper.${SITE.commis ? " Another supplier? Add its invoice anyway: if it can't be read, you can send it to us." : ""}</p>
       ${canSendInvoices() ? `<p class="hint">Something read wrong? <button class="linkish" data-act="inv-pick-send">Send us the invoice</button> and we'll fix it for everyone. We delete our copy once it's fixed.</p>` : ""}
+      ${monthSoFar()}
       ${unreadCard()}
       ${cards || `<p class="empty">No invoices waiting. Add one above.</p>`}`;
   }
@@ -2464,17 +2482,18 @@
   /** Saves the ticked, matched lines of one invoice: price, pack, date, name on invoice, history; ticks the newest. */
   async function saveInvoice(inv) {
     let n = 0;
-    for (const l of inv.lines) {
-      const v = invoiceLineView(inv, l);
+    const fees = feesOf(inv);
+    for (const [k, l] of inv.lines.entries()) {
+      const v = invoiceLineView(inv, l, k, fees);
       if (!l.include || !v.ready) continue;
       const i = v.i, key = Invoices.lineKey(l);
       const mine = data.offers.filter((o) => o.ingredient_id === i.id);
       let o = Invoices.offerFor(l, inv.supplier, mine, i.preferred_offer_id);
-      const fields = { supplier: inv.supplier, supplier_item: key, pack_cost: l.price, pack_qty: +l.packQty, pack_unit: l.packUnit, updated_at: inv.date || today() };
+      const fields = { supplier: inv.supplier, supplier_item: key, pack_cost: v.paid, pack_qty: +l.packQty, pack_unit: l.packUnit, updated_at: inv.date || today() };
       if (o) await patch("offers", o.id, fields);
       else o = await insert("offers", { id: uid(), ingredient_id: i.id, ...fields });
       await sizeBottle(i.id, fields.pack_qty, fields.pack_unit);
-      await insert("price_history", { id: uid(), offer_id: o.id, ingredient_id: i.id, supplier: inv.supplier, pack_cost: l.price, pack_qty: +l.packQty,
+      await insert("price_history", { id: uid(), offer_id: o.id, ingredient_id: i.id, supplier: inv.supplier, pack_cost: v.paid, pack_qty: +l.packQty,
         pack_unit: l.packUnit, date: inv.date || today(), source: "Invoice " + inv.file.replace(/\.pdf$/i, "") });
       // The newest price wins. Only an invoice or a price you typed has a real date; imported prices
       // (Master Data, the Hector copy, the inventory sheet) always give way to an invoice.
@@ -2505,18 +2524,47 @@
     return lineGuess(Invoices.lineKey(l));
   }
   const recordOf = (inv) => Summary.invoiceRecord(inv.lines, (l) => lineGroup(inv, l), inv.missed || 0);
-  const groupLabel = (key) => (Summary.GROUPS.concat(Summary.SPEND_EXTRA).find((g) => g.key === key) || { label: key }).label;
+  // The groups, with your own (settings.spendGroups): a delivery fee, equipment rental…
+  const spendGroups = () => Summary.spendGroups(settings.spendGroups);
+  const groupLabel = (key) => (spendGroups().concat(Summary.SPEND_EXTRA).find((g) => g.key === key) || { label: Summary.labelOf(key) }).label;
   function spendWords(lines) {
     const by = new Map();
     for (const l of lines) if (l.group !== Summary.LEFT_OUT) by.set(l.group, (by.get(l.group) || 0) + l.total);
     return [...by].map(([g, t]) => `${groupLabel(g)} ${money(t)}`).join(" · ");
   }
-  /** The list of what a line can count as. */
-  function groupPicker(value, attrs) {
+  /** The list of what a line can count as, ending with "+ New group…". */
+  const NEW_GROUP = "+new";
+  function groupOptions(value) {
+    const all = spendGroups();
+    // A group taken off the list still shows on what was saved in it.
+    if (value && value !== NEW_GROUP && !all.concat(Summary.SPEND_EXTRA).some((g) => g.key === value)) all.push({ key: value, label: Summary.labelOf(value), tier: "other" });
     const option = (g) => `<option value="${esc(g.key)}"${g.key === value ? " selected" : ""}>${esc(g.label)}</option>`;
-    return `<select class="in in--group" ${attrs}>${Summary.TIERS.map((t) => `<optgroup label="${esc(t.label)}">${Summary.GROUPS.filter((g) => g.tier === t.key).map(option).join("")}</optgroup>`).join("")}
-      <optgroup label="Other">${Summary.SPEND_EXTRA.map(option).join("")}</optgroup></select>`;
+    return Summary.TIERS.map((t) => `<optgroup label="${esc(t.label)}">${all.filter((g) => g.tier === t.key).map(option).join("")}</optgroup>`).join("")
+      + `<optgroup label="Other">${Summary.SPEND_EXTRA.map(option).join("")}<option value="${NEW_GROUP}">+ New group…</option></optgroup>`;
   }
+  const groupPicker = (value, attrs) => `<select class="in in--group" ${attrs}>${groupOptions(value)}</select>`;
+  /** "+ New group…": its name, then what kind of cost it is. Saved with your account; gives its key, or null when cancelled. */
+  async function askNewGroup() {
+    const name = await ask("A new group, for what doesn't fit the others: a delivery fee, equipment rental…\n\nWhat's it called?", { ok: "Next", input: true, placeholder: "e.g. Delivery fees" });
+    const found = name ? Summary.newGroup(name, "other", settings.spendGroups) : null;
+    if (!found) return null;
+    if (!found.added) { toast(`“${found.group.label}” is already on the list, so it's picked.`); return found.group.key; }
+    const tier = await ask(`What kind of cost is “${found.group.label}”?\n\nFood cost: added to the food on your invoices, so it's in the month's food cost %.\nBeverage cost: with the drinks.\nNot food cost: it only shows in the spending.`,
+      { choices: Summary.TIERS.map((t) => ({ value: t.key, label: t.label, main: t.key === "other" })) });
+    if (!tier) return null;
+    await saveSettings({ ...settings, spendGroups: [...(settings.spendGroups || []), { key: found.group.key, label: found.group.label, tier }] });
+    toast(`“${found.group.label}” added (${Summary.TIERS.find((t) => t.key === tier).label.toLowerCase()}).`);
+    return found.group.key;
+  }
+
+  /* A fee spread over the items it came with (a delivery fee): each other line's price takes its share, by its amount, and that's the
+   * price saved. Remembered per supplier and fee (settings.invoiceSpread = { "supplier|name on invoice": true }). Its spending stays
+   * in its own group. */
+  const isSpread = (inv, l) => (l.spread != null ? l.spread : !!(settings.invoiceSpread || {})[productKey(inv.supplier, l)]);
+  const feesOf = (inv) => Invoices.spreadFees(inv.lines, (l) => isSpread(inv, l), (l) => lineGroup(inv, l) !== Summary.LEFT_OUT);
+  // Offered on what reads like a fee, on a line in a group of your own, and on one already spread.
+  const mightSpread = (inv, l) => isSpread(inv, l) || Invoices.looksLikeFee(l.item) || ownGroup(lineGroup(inv, l));
+  const ownGroup = (key) => !Summary.GROUPS.concat(Summary.SPEND_EXTRA).some((g) => g.key === key);
   /** This invoice, if it's already recorded: the same file from the same supplier, or the same supplier, date and total. */
   function recordedInvoice(inv) {
     const date = inv.date || today(), rec = recordOf(inv);
@@ -2533,9 +2581,43 @@
   // Saved after its month closed. (A month from your old sheet was never closed in the app: nothing counts as late for it.)
   const savedAfterClosing = (x, closed) => !!(closed && !closed.source && x.saved_at && Date.parse(x.saved_at) > Date.parse(closed.closed_at));
   const spendOpen = new Set(); // the invoices showing their lines (this visit only)
+  const supplierOpen = new Set(); // the suppliers showing what was bought (this visit only)
+  // "the 3rd, 10th and 12th": the days of the month, the month being the page's.
+  const nth = (n) => n + ([11, 12, 13].includes(n % 100) ? "th" : ["th", "st", "nd", "rd"][n % 10] || "th");
+  const theDays = (dates) => { const d = [...new Set(dates)].map((x) => nth(+x.slice(8, 10))); return "the " + (d.length > 1 ? d.slice(0, -1).join(", ") + " and " + d[d.length - 1] : d[0]); };
+  /** A month's purchases by supplier, the biggest first: its invoices, what they count as and the total. Tap one to see what was bought. */
+  function supplierTable(month) {
+    const list = Summary.bySupplier(data.saved_invoices || [], month);
+    if (!list.length) return "";
+    const rows = list.map((s) => {
+      const key = month + "|" + s.supplier, open = supplierOpen.has(key);
+      return `<tr><td><button class="sum-toggle" type="button" data-act="sup-toggle" data-key="${esc(key)}" aria-expanded="${open}">${esc(s.supplier)}</button>
+          <div class="muted small">${s.invoices} invoice${s.invoices === 1 ? "" : "s"}: ${esc(theDays(s.dates))}</div></td>
+        <td class="muted small">${esc(s.groups.map((g) => `${groupLabel(g.key)} ${money(g.total)}`).join(" · "))}</td>
+        <td class="num">${money(s.total)}</td></tr>`
+        + (open ? s.items.map((i) => `<tr class="sum-section"><td>${esc(i.item)}${i.times > 1 ? ` <span class="muted small nowrap">${i.times} times</span>` : ""}</td>
+          <td class="muted small">${esc(groupLabel(i.group))}</td><td class="num">${money(i.total)}</td></tr>`).join("") : "");
+    }).join("");
+    const total = Math.round(list.reduce((t, s) => t + s.total, 0) * 100) / 100;
+    return `<div class="table-wrap"><table class="list sup-list"><thead><tr><th>Supplier</th><th>Counts as</th><th class="num">Spent</th></tr></thead>
+      <tbody>${rows}<tr class="sum-total"><td>Total (${list.length} supplier${list.length === 1 ? "" : "s"})</td><td></td><td class="num">${money(total)}</td></tr></tbody></table></div>`;
+  }
+  /** On the Invoices page: this month so far, by supplier. Folded, with the total on the fold. */
+  function monthSoFar() {
+    if (Store.part18Old()) return "";
+    const month = thisMonth(), list = Summary.bySupplier(data.saved_invoices || [], month), total = list.reduce((t, s) => t + s.total, 0);
+    return `<section class="card card--flat inv-month">
+      <details class="fold" data-k="inv-month"${detailsOpen.get("inv-month") ? " open" : ""}>
+        <summary><h2>Bought in ${esc(monthLabel(month))} so far</h2><span class="small muted">${list.length ? `${money(total)} from ${list.length} supplier${list.length === 1 ? "" : "s"}, before taxes` : "nothing saved yet"}</span></summary>
+        ${list.length ? `<p class="hint">Every invoice saved with a date this month, and purchases added by hand. Tap a supplier to see what was bought.</p>${supplierTable(month)}`
+          : `<p class="hint">Save an invoice and it shows up here, by supplier.</p>`}
+        <p><a class="btn btn--small" href="#/spending/${month}">The month by group</a></p>
+      </details>
+    </section>`;
+  }
   function spendingPage(monthParam) {
     const month = /^\d{4}-\d{2}$/.test(monthParam || "") ? monthParam : thisMonth(), prev = shiftMonth(month, -1), label = monthLabel(month);
-    const all = data.saved_invoices || [], s = Summary.spent(all, month), closed = closedMonth(month);
+    const all = data.saved_invoices || [], s = Summary.spent(all, month, settings.spendGroups), closed = closedMonth(month);
     const list = all.filter((x) => String(x.date).slice(0, 7) === month).sort((a, b) => String(a.date).localeCompare(String(b.date)) || a.supplier.localeCompare(b.supplier, "fr"));
     const late = (x) => savedAfterClosing(x, closed);
     const rows = list.map((x) => {
@@ -2563,6 +2645,9 @@
       <p class="hint">Everything saved with a date in ${esc(label)}, before taxes. Tap one to see its lines and change what a line counts as: that product is remembered from then on.</p>
       ${list.length ? `<div class="table-wrap"><table class="list sum sum--spend"><thead><tr><th>Group</th><th class="num">Spent</th></tr></thead><tbody>${body}
         <tr class="sum-total"><td>Total (${s.invoices} invoice${s.invoices === 1 ? "" : "s"})</td><td class="num">${money(s.total)}</td></tr></tbody></table></div>
+      <h2>By supplier</h2>
+      <p class="hint">Tap a supplier to see what was bought from them.</p>
+      ${supplierTable(month)}
       <h2>Invoices</h2>
       <div class="table-wrap"><table class="list spend-list"><thead><tr><th>Date</th><th>Supplier</th><th>Counts as</th><th class="num">Amount</th><th><span class="vh">Actions</span></th></tr></thead><tbody>${rows}</tbody></table></div>`
       : `<p class="empty">Nothing saved for ${esc(label)} yet. Save an invoice on the <a href="#/invoices">Invoices</a> page, or add a purchase below.</p>`}
@@ -2573,7 +2658,7 @@
           <label class="block">Supplier<input class="in" name="supplier" list="dl-suppliers" placeholder="Market, Costco…" /></label>
           <label class="block">Date<input class="in" type="date" name="date" value="${esc(month === thisMonth() ? today() : month + "-01")}" required /></label>
           <label class="block">Amount<input class="in" name="amount" inputmode="decimal" placeholder="0.00" required /></label>
-          <label class="block">Counts as${groupPicker("food", 'name="group"')}</label>
+          <label class="block">Counts as${groupPicker("food", 'name="group" data-act="spend-add-group"')}</label>
           <button class="btn btn--main">Add it</button>
         </form>
       </section>`}`;
@@ -3206,9 +3291,21 @@
     // What a line counts as: this line now, and that product from now on.
     async "inv-group"(el) {
       const inv = invoiceWork[el.dataset.inv], l = inv.lines[el.dataset.line];
-      l.group = el.value;
+      const group = el.value === NEW_GROUP ? await askNewGroup() : el.value;
+      if (!group) return render();
+      l.group = group;
       keepInvoices();
-      await write(() => saveSettings({ ...settings, invoiceGroups: { ...(settings.invoiceGroups || {}), [productKey(inv.supplier, l)]: el.value } }));
+      await write(() => saveSettings({ ...settings, invoiceGroups: { ...(settings.invoiceGroups || {}), [productKey(inv.supplier, l)]: group } }));
+    },
+    // A fee spread over the other items' prices, or not: this invoice now, and that supplier's fee from now on.
+    async "inv-spread"(el) {
+      const inv = invoiceWork[el.dataset.inv], l = inv.lines[el.dataset.line], on = el.dataset.on === "1";
+      l.spread = on;
+      if (on) l.include = false;
+      keepInvoices();
+      const remembered = { ...(settings.invoiceSpread || {}) };
+      if (on) remembered[productKey(inv.supplier, l)] = true; else delete remembered[productKey(inv.supplier, l)];
+      await write(() => saveSettings({ ...settings, invoiceSpread: remembered }));
     },
     "spend-toggle"(el) {
       if (spendOpen.has(el.dataset.id)) spendOpen.delete(el.dataset.id); else spendOpen.add(el.dataset.id);
@@ -3220,12 +3317,28 @@
     async "spend-line-group"(el) {
       const x = get("saved_invoices", el.dataset.id);
       if (!x) return render();
-      const lines = x.lines.map((l, k) => (k === +el.dataset.line ? { ...l, group: el.value } : l)), l = lines[+el.dataset.line];
+      const group = el.value === NEW_GROUP ? await askNewGroup() : el.value;
+      if (!group) return render();
+      const lines = x.lines.map((l, k) => (k === +el.dataset.line ? { ...l, group } : l)), l = lines[+el.dataset.line];
       const total = Summary.invoiceRecord(lines.map((y) => ({ item: y.item, total: y.total, group: y.group })), (y) => y.group).total;
       await write(async () => {
         await patch("saved_invoices", x.id, { lines, total });
-        await saveSettings({ ...settings, invoiceGroups: { ...(settings.invoiceGroups || {}), [(x.supplier || "") + "|" + l.item]: el.value } });
+        await saveSettings({ ...settings, invoiceGroups: { ...(settings.invoiceGroups || {}), [(x.supplier || "") + "|" + l.item]: group } });
       });
+    },
+    // The list on "Add a purchase by hand": a new group is picked there and then, without redrawing what's typed.
+    async "spend-add-group"(el) {
+      if (el.value !== NEW_GROUP) { el.dataset.was = el.value; return; }
+      const group = (await askNewGroup()) || el.dataset.was || "food";
+      el.innerHTML = groupOptions(group);
+      el.value = group;
+    },
+    "sup-toggle"(el) {
+      if (supplierOpen.has(el.dataset.key)) supplierOpen.delete(el.dataset.key); else supplierOpen.add(el.dataset.key);
+      render.nextFocus = null;
+      render();
+      const again = main.querySelector(`[data-act="sup-toggle"][data-key="${CSS.escape(el.dataset.key)}"]`);
+      if (again) again.focus();
     },
     async "spend-delete"(el) {
       const x = get("saved_invoices", el.dataset.id);
@@ -4330,6 +4443,7 @@
         if (amount == null) { toast("The amount has to be a number, like 120 or 1 250.50.", true); return; }
         if (!date) { toast("Which day? The date decides the month it counts in.", true); return; }
         const supplier = form.supplier.value.trim(), group = form.group.value;
+        if (group === NEW_GROUP) { toast("Pick what it counts as.", true); return; }
         await write(() => insert("saved_invoices", { id: uid(), supplier, date, file: "", total: group === Summary.LEFT_OUT ? 0 : amount, lines: [{ item: supplier || "Purchase", total: amount, group, ing: null }], saved_at: new Date().toISOString() }));
         if (!write.failed) toast(`${money(amount)} added to ${monthLabel(date.slice(0, 7))}.`);
         return;

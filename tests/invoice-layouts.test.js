@@ -177,3 +177,41 @@ test("Amazon.ca: the English name, the price before tax, shipping isn't a line, 
   assert.deepStrictEqual(r.lines.map((l) => [l.item, l.qty, l.uom, l.price, l.total]), [["Test Gum, 200g", 2, "UN", 9.99, 19.98]]);
   assert.strictEqual(r.missed, 0);
 });
+
+// Made up, in the layout of Boulangerie Guillaume's cash-register invoice: the taxes come first in the text, then the items, then the
+// header. Rows run together: product number | name | quantity | price | discount | amount.
+const guillaume = (date) => [
+  "", "", "TPS: 000000000rt0001$1.00", "TVQ: ", "0000000000tq0001", "$2.00", "Total$1375.00",
+  "No produitArticlesQtéPrixRabaisMontant",
+  "100001Miche Test12$5.00$0.00$60.00",
+  "100002Baguette 23$2.00$0.00$6.00",
+  "100003Pain Test10$4.00$4.00$36.00",
+  "100004Gâteau Test1$1,250.00$0.00$1,250.00",
+  "100005Échantillon2$3.00$6.00$0.00",
+  "100099LIVRAISON 20,00$1$20.00$0.00$20.00",
+  "29$10.00$1,372.00",
+  "Paiement sur ", "compte 0000000", "($1375.00)", "Merci! Thank You!     ",
+  "Numéro:", "Date:", date, "0000000000000", "Empl:", "Caisse:", "Test", "1",
+  "Vendu à :Resto Test", "1 rue Test", "Montréal, Quebec", "H0H 0H0", "Livrer à : ",
+  "Boulangerie Guillaume", "1 boul Test", "Montreal, Qc  H0H0H0", "www.guillau.me", "000-000-0000", "Facture",
+].join("\n");
+
+test("Boulangerie Guillaume: every row, the quantity off the end of the name, the delivery fee, the subtotal adding up", () => {
+  const r = Invoices.read(guillaume("03/04/2026"));
+  assert.strictEqual(r.supplier, "Boulangerie Guillaume");
+  assert.strictEqual(r.date, "2026-03-04", "month first");
+  assert.deepStrictEqual(r.lines.map((l) => [l.code, l.item, l.qty, l.uom, l.price, l.total]), [
+    ["100001", "Miche Test", 12, "UN", 5, 60],
+    ["100002", "Baguette 2", 3, "UN", 2, 6],
+    ["100003", "Pain Test", 10, "UN", 3.6, 36],
+    ["100004", "Gâteau Test", 1, "UN", 1250, 1250],
+    ["100099", "LIVRAISON 20,00$", 1, "UN", 20, 20],
+  ], "a name ending in a number keeps it; a discount comes off the price; something free isn't a line");
+  assert.strictEqual(r.subtotal, 1372);
+  assert.strictEqual(r.missed, 0);
+  assert.deepStrictEqual(Invoices.packOf(r.lines[0], Units), { qty: 1, unit: "unit" });
+});
+
+test("Boulangerie Guillaume: a date that can't be month first is day first", () => {
+  assert.strictEqual(Invoices.read(guillaume("25/04/2026")).date, "2026-04-25");
+});

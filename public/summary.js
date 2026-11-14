@@ -194,23 +194,78 @@
   /** Two invoices are the same one when supplier, date and lines all match: a copy of a file, whatever it's called. */
   const sameLines = (a, b) => a.length === b.length && a.every((l, k) => l.item === b[k].item && Math.abs((+l.total || 0) - (+b[k].total || 0)) < 0.005);
 
-  /** What a month's invoices come to: by tier and group, the total, and how many invoices. */
-  function spent(invoices, month) {
+  /* Groups of your own, for what you buy that doesn't fit the others (a delivery fee): settings.spendGroups =
+   * [{ key: "x:Delivery fees", label: "Delivery fees", tier: "other" }]. Only purchases go in them; the count's sections don't. */
+  const OWN = "x:";
+  /** A group's name from its key alone, for one that's no longer on the list. */
+  const labelOf = (key) => (String(key).startsWith(OWN) ? String(key).slice(OWN.length) : String(key));
+  /** Every group a purchase can count as: the built-in ones, then your own, each under the kind of cost you gave it. */
+  function spendGroups(own) {
+    const mine = (Array.isArray(own) ? own : []).filter((g) => g && g.key && g.label && !known.has(g.key))
+      .map((g) => ({ key: g.key, label: g.label, tier: TIERS.some((t) => t.key === g.tier) ? g.tier : "other", own: true }));
+    return GROUPS.concat(mine.filter((g, k) => mine.findIndex((x) => x.key === g.key) === k));
+  }
+  /** A new group from the name typed. A name already on the list (whatever the capitals or accents) gives that group back instead. */
+  function newGroup(name, tier, own) {
+    const label = String(name == null ? "" : name).trim().replace(/\s+/g, " ").slice(0, 40);
+    if (!label) return null;
+    const same = spendGroups(own).concat(SPEND_EXTRA).find((g) => fold(g.label) === fold(label));
+    if (same) return { group: same, added: false };
+    return { group: { key: OWN + label, label, tier: TIERS.some((t) => t.key === tier) ? tier : "other" }, added: true };
+  }
+
+  const cents = (n) => Math.round(n * 100) / 100;
+  /** What a month's invoices come to: by tier and group, the total, and how many invoices. own: your own groups. food: everything in the
+   * food cost tier (Food, and any group of your own you put there), which is what the month's food cost uses. */
+  function spent(invoices, month, own) {
     const list = invoices.filter((x) => String(x.date || "").slice(0, 7) === month);
     const by = new Map();
     for (const x of list) for (const l of x.lines || []) {
       if (l.group === LEFT_OUT) continue;
       by.set(l.group, (by.get(l.group) || 0) + (+l.total || 0));
     }
-    const groups = GROUPS.filter((g) => by.has(g.key)).map((g) => ({ ...g, total: by.get(g.key) }));
-    const round = (n) => Math.round(n * 100) / 100;
+    const all = spendGroups(own);
+    // A group taken off the list still shows, under its own name, on what was saved in it.
+    for (const k of by.keys()) if (k !== NOT_SORTED && !all.some((g) => g.key === k)) all.push({ key: k, label: labelOf(k), tier: "other" });
+    const groups = all.filter((g) => by.has(g.key)).map((g) => ({ ...g, total: by.get(g.key) }));
     return {
       invoices: list.length, tiers: TIERS.map((t) => ({ ...t, groups: groups.filter((g) => g.tier === t.key) })).filter((t) => t.groups.length), groups,
-      notSorted: by.has(NOT_SORTED) ? round(by.get(NOT_SORTED)) : 0, food: round(by.get("food") || 0), total: round([...by.values()].reduce((t, v) => t + v, 0)),
+      notSorted: by.has(NOT_SORTED) ? cents(by.get(NOT_SORTED)) : 0, food: cents(groups.filter((g) => g.tier === "food").reduce((t, g) => t + g.total, 0)),
+      total: cents([...by.values()].reduce((t, v) => t + v, 0)),
     };
   }
 
-  const api = { TIERS, GROUPS, SPEND_EXTRA, LEFT_OUT, NOT_SORTED, guessGroup, groupOf, build, foodCost, parseAmount, freeze, thaw, lineGuesser, invoiceRecord, sameLines, spent };
+  /** What a month's purchases come to per supplier, the biggest first: how many invoices and on which days, the total, by group, and what
+   * was bought (the same thing on several invoices is one row, with how many times). Lines left out don't count, like everywhere else. */
+  function bySupplier(invoices, month) {
+    const by = new Map();
+    for (const x of invoices) {
+      if (String(x.date || "").slice(0, 7) !== month) continue;
+      const name = String(x.supplier || "").trim() || "No supplier";
+      if (!by.has(fold(name))) by.set(fold(name), { supplier: name, invoices: 0, dates: [], total: 0, groups: new Map(), items: new Map() });
+      const s = by.get(fold(name));
+      s.invoices++;
+      s.dates.push(String(x.date).slice(0, 10));
+      for (const l of x.lines || []) {
+        if (l.group === LEFT_OUT) continue;
+        const t = +l.total || 0, item = String(l.item || "").trim() || "Purchase";
+        s.total += t;
+        s.groups.set(l.group, (s.groups.get(l.group) || 0) + t);
+        if (!s.items.has(fold(item))) s.items.set(fold(item), { item, group: l.group, times: 0, total: 0 });
+        const it = s.items.get(fold(item));
+        it.times++;
+        it.total += t;
+      }
+    }
+    return [...by.values()].map((s) => ({
+      supplier: s.supplier, invoices: s.invoices, dates: s.dates.sort(), total: cents(s.total),
+      groups: [...s.groups].map(([key, total]) => ({ key, total: cents(total) })).sort((a, b) => b.total - a.total),
+      items: [...s.items.values()].map((i) => ({ ...i, total: cents(i.total) })).sort((a, b) => b.total - a.total || a.item.localeCompare(b.item, "fr")),
+    })).sort((a, b) => b.total - a.total || a.supplier.localeCompare(b.supplier, "fr"));
+  }
+
+  const api = { TIERS, GROUPS, SPEND_EXTRA, LEFT_OUT, NOT_SORTED, guessGroup, groupOf, build, foodCost, parseAmount, freeze, thaw, lineGuesser, invoiceRecord, sameLines,
+    spent, spendGroups, newGroup, labelOf, bySupplier };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.Summary = api;
 })(typeof window !== "undefined" ? window : globalThis);

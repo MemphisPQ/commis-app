@@ -494,6 +494,14 @@ select.count-unit { padding-left: 8px; padding-right: 2px; }
 .spend-add { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 14px; }
 .spend-add .block { margin-top: 0; }
 .spend-add .in--group { min-height: 38px; font-size: 1rem; max-width: 230px; }
+/* By supplier: on the Invoices page (folded) and the Spending page */
+.sup-list td:nth-child(2) { white-space: normal; }
+.inv-month .fold > summary .small { white-space: nowrap; }
+/* A fee spread over the other items' prices */
+.inv-spread { margin-top: 6px; display: block; }
+.inv-fee { white-space: normal; max-width: 340px; }
+.inv-share { margin-top: 2px; }
+.inv-share strong { color: var(--ink); }
 
 /* ---------- a closed month ---------- */
 .alert--closed { background: var(--brand-soft); color: var(--ink); }
