@@ -300,6 +300,9 @@ body.dragging-line, body.dragging-line * { cursor: grabbing !important; user-sel
 .catrow .muted { width: 84px; text-align: right; }
 .in--add { width: 100%; }
 .group-by { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.sort-by { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; max-width: 100%; }
+.sort-by label { display: inline-flex; align-items: center; gap: 6px; }
+.sort-by__dir { white-space: nowrap; }
 .inv-new { margin-top: 6px; }
 .scale-open { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 16px 0 0; }
 .scale { margin-top: 16px; padding-top: 4px; border-top: 1px solid var(--line); }
@@ -440,6 +443,11 @@ select.count-unit { padding-left: 8px; padding-right: 2px; }
 .count-tare { display: block; margin-top: 4px; white-space: normal; font-size: 0.82rem; color: var(--muted); text-align: right; }
 .in--tare { width: calc(44px * var(--box)); min-height: 28px; padding: 1px 4px; text-align: center; }
 .in--open { width: calc(84px * var(--box)); min-height: 30px; padding: 1px 6px; text-align: right; }
+.menus { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 0.92rem; max-width: 100%; }
+.menus__one { display: inline-flex; align-items: center; gap: 2px; padding: 2px 4px 2px 10px; border-radius: 999px; background: var(--brand-soft); font-weight: 600; }
+.menus__one a { color: var(--brand); }
+.menus__one .icon { width: 26px; height: 26px; min-height: 26px; }
+.menus .in--menu { width: calc(150px * var(--box)); max-width: 100%; }
 .sizes { display: grid; gap: 8px; margin-top: 6px; }
 .sizes__row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
 .sizes__row .in--num { width: calc(84px * var(--box)); }

@@ -134,7 +134,7 @@
     $("#dl-preps").innerHTML = data.recipes.filter((r) => r.kind === "prep").sort(byName).concat(data.recipes.filter((r) => r.kind === "dish").sort(byName)).map((r) => opt(r.name)).join("");
     $("#dl-suppliers").innerHTML = uniq(data.offers.map((o) => o.supplier)).map(opt).join("");
     $("#dl-categories").innerHTML = categoryNames("ingredients").map(opt).join("");
-    $("#dl-menus").innerHTML = uniq(data.recipes.filter((r) => r.kind === "dish").map((r) => r.menu)).map(opt).join("");
+    $("#dl-menus").innerHTML = uniq(allMenus()).map(opt).join("");
     $("#dl-dish-cats").innerHTML = categoryNames("dishes").map(opt).join("");
     $("#dl-bottle-sizes").innerHTML = Barback.BOTTLE_SIZES.map(opt).join("");
   }
@@ -635,9 +635,9 @@
   /* ---------- what an employee can do here ---------- */
   const EMPLOYEE_PAGES = new Set(["dishes", "preps", "recipe", "ingredients", "ingredient", "menu", "settings", "bring"]);
   const pageAllowed = (page) => !isEmployee() || EMPLOYEE_PAGES.has(page) || (page === "inventory" && canCount());
-  const ALWAYS_OK = new Set(["draft-restore", "draft-discard", "dish-group", "hist-period", "sign-out", "back-to", "new-recipe", "duplicate", "new-ingredient", "open-in-kitchen", "inv-print", "leave-account", "bring-from", "bring-pick", "bring-go"]);
+  const ALWAYS_OK = new Set(["draft-restore", "draft-discard", "dish-group", "dish-sort", "dish-sort-dir", "hist-period", "sign-out", "back-to", "new-recipe", "duplicate", "new-ingredient", "open-in-kitchen", "inv-print", "leave-account", "bring-from", "bring-pick", "bring-go"]);
   const COUNTING = new Set(["count", "count-open", "count-unit", "count-containers", "count-same"]);
-  const OWN_RECIPE = new Set(["recipe-field", "dish-cat", "dish-menu", "measure", "measure-costper", "container", "add-line", "line-field", "delete-line", "delete-recipe", "ack", "recipe-checked", "scale-open", "scale-pick", "scale-qty", "scale-unit", "scale-close", "scale-save", "scale-clear", "download-card", "save-card", "lock", "unlock", "lock-field"]);
+  const OWN_RECIPE = new Set(["recipe-field", "dish-cat", "dish-menu", "menu-add", "menu-remove", "measure", "measure-costper", "container", "add-line", "line-field", "delete-line", "delete-recipe", "ack", "recipe-checked", "scale-open", "scale-pick", "scale-qty", "scale-unit", "scale-close", "scale-save", "scale-clear", "download-card", "save-card", "lock", "unlock", "lock-field"]);
   const OWN_ITEM = new Set(["ing-field", "allergen", "offer-field", "prefer", "add-offer", "delete-offer", "delete-ingredient", "measure", "container", "bottle-field"]);
   function employeeMay(act, el) {
     if (ALWAYS_OK.has(act)) return true;
@@ -1006,7 +1006,7 @@
       const picked = new Set(secs ? [...secs.querySelectorAll("[data-sec][aria-pressed=true]")].map((b) => b.dataset.sec) : []);
       let shown = 0;
       main.querySelectorAll("tr[data-search]").forEach((tr) => {
-        const ok = (!q || tr.dataset.search.includes(q)) && (!g || tr.dataset.group === g) && (!picked.size || picked.has(tr.dataset.sec != null ? tr.dataset.sec : tr.dataset.group))
+        const ok = (!q || tr.dataset.search.includes(q)) && (!g || (tr.dataset.group || "").split("\n").includes(g)) && (!picked.size || picked.has(tr.dataset.sec != null ? tr.dataset.sec : tr.dataset.group))
           && (!flagged || !flagged.checked || tr.dataset.flag === "1") && (!noPrice || !noPrice.checked || tr.dataset.noprice === "1");
         tr.hidden = !ok;
         if (ok) shown++;
@@ -1065,7 +1065,8 @@
   const NO_CAT = "No category";
   const dishCat = (r) => (r.category || "").trim() || NO_CAT;
   const catRank = (c) => { const k = dishCatList().findIndex((x) => fold(x) === fold(c)); return k >= 0 ? k : c === NO_CAT ? 1e6 : 1e5; };
-  const byCat = (a, b) => catRank(dishCat(a)) - catRank(dishCat(b)) || dishCat(a).localeCompare(dishCat(b), "fr", { sensitivity: "base" }) || byName(a, b);
+  const catOrder = (a, b) => catRank(dishCat(a)) - catRank(dishCat(b)) || dishCat(a).localeCompare(dishCat(b), "fr", { sensitivity: "base" });
+  const byCat = (a, b) => catOrder(a, b) || byName(a, b);
   // "entree", "plat" and "pl" become "Entrée" and "Plats": the standard spelling or the one already in use (capitals,
   // accents and a final s don't matter, and a start that fits only one category is enough), so a category never splits in two.
   function catSpelling(v) {
@@ -1080,31 +1081,72 @@
 
   // Dishes grouped by the menu they're on: dated menus newest first ("Menu 2026-10-08"), then the others A to Z.
   const NO_MENU = "No menu";
-  const dishMenu = (r) => (r.menu || "").trim() || NO_MENU;
+  // A dish can be on several menus. They're kept in its one Menu box, one per line ("Noel 2026\nBrunch"), so nothing changes
+  // in the database and a dish on one menu is saved exactly as before.
+  const menusOf = (r) => [...new Set(String((r && r.menu) || "").split("\n").map((m) => m.trim()).filter(Boolean))];
+  const menuText = (list) => [...new Set(list.map((m) => String(m || "").trim()).filter(Boolean))].join("\n");
+  const allMenus = () => [...new Set(data.recipes.filter((r) => r.kind === "dish").flatMap(menusOf))];
   const menuDate = (m) => { const d = m.match(/(\d{4})-(\d{1,2})(?:-(\d{1,2}))?/); return d ? +d[1] * 10000 + +d[2] * 100 + +(d[3] || 0) : 0; };
-  const byMenu = (a, b) => { const x = dishMenu(a), y = dishMenu(b); return (x === NO_MENU) - (y === NO_MENU) || menuDate(y) - menuDate(x) || x.localeCompare(y, "fr", { sensitivity: "base" }) || byName(a, b); };
+  const byMenuName = (x, y) => (x === NO_MENU) - (y === NO_MENU) || menuDate(y) - menuDate(x) || x.localeCompare(y, "fr", { sensitivity: "base" });
   // A menu typed like one already in use ("menu, extra") takes its spelling; anything else is a new menu.
-  const menuSpelling = (v) => { const t = v.trim(); return data.recipes.map((r) => (r.menu || "").trim()).find((m) => m && fold(m) === fold(t)) || t; };
+  const menuSpelling = (v) => { const t = String(v || "").trim(); return allMenus().find((m) => fold(m) === fold(t)) || t; };
   const DISH_GROUP = "costing.dishGroup";
+  // Sort by: inside each section of the Dishes list, and on a menu's page. Remembered on this device, for each of the two.
+  // Names A to Z and categories in menu order; costs, prices and food costs highest first; the button turns it around.
+  // A dish without that number (no menu price yet, so no food cost) goes last either way.
+  const DISH_SORT = "costing.dishSort";
+  const SORT_LABELS = { name: "Name", category: "Category", cost: "Cost / portion", price: "Menu price", fc: "Food cost" };
+  function dishSort(page, options) {
+    const s = readJSON(DISH_SORT, {})[page] || {};
+    const by = options.includes(s.by) ? s.by : page === "menu" ? "category" : "name";
+    return { by, rev: by === s.by && !!s.rev };
+  }
+  function dishSorter({ by, rev }) {
+    const sign = rev ? -1 : 1;
+    if (by === "name") return (a, b) => sign * byName(a, b);
+    if (by === "category") return (a, b) => sign * catOrder(a, b) || byName(a, b);
+    const field = { cost: "perPortion", price: "menuPrice", fc: "foodCost" }[by], got = new Map();
+    const num = (r) => {
+      if (!got.has(r.id)) { const v = coster.summary(r.id)[field]; got.set(r.id, v == null || !Number.isFinite(+v) ? null : +v); }
+      return got.get(r.id);
+    };
+    return (a, b) => { const x = num(a), y = num(b); return (x == null) - (y == null) || (x == null ? 0 : sign * (y - x)) || byName(a, b); };
+  }
+  function sortControl(page, options, now) {
+    const order = now.by === "name" ? (now.rev ? "Z to A" : "A to Z") : now.by === "category" ? (now.rev ? "Menu order, reversed" : "Menu order")
+      : now.rev ? "Lowest first" : "Highest first";
+    return `<span class="sort-by"><label><span class="muted">Sort by</span>
+        <select data-act="dish-sort" data-page="${page}" aria-label="Sort dishes by">${options.map((k) => `<option value="${k}"${k === now.by ? " selected" : ""}>${SORT_LABELS[k]}</option>`).join("")}</select></label>
+      <button type="button" class="sec sort-by__dir" data-act="dish-sort-dir" data-page="${page}" data-by="${now.by}" data-rev="${now.rev ? "1" : ""}"
+        title="Turn the order around" aria-label="Order: ${order}. Turn it around">⇅ ${order}</button></span>`;
+  }
 
   function recipeList(kind) {
     const isDish = kind === "dish";
     const byMenuNow = isDish && readJSON(DISH_GROUP, "category") === "menu";
-    const groupOf = byMenuNow ? dishMenu : dishCat;
-    const list = data.recipes.filter((r) => r.kind === kind).sort(!isDish ? byName : byMenuNow ? byMenu : byCat);
-    const menus = [...new Set(list.map((r) => r.menu).filter(Boolean))].sort((a, b) => b.localeCompare(a));
+    const list = data.recipes.filter((r) => r.kind === kind).sort(!isDish || byMenuNow ? byName : byCat);
+    const menus = allMenus().sort((a, b) => b.localeCompare(a));
+    // Sorted inside each section (by category, Category isn't one of the choices: it's the sections already).
+    const sortChoices = Object.keys(SORT_LABELS).filter((k) => byMenuNow || k !== "category");
+    const sortNow = isDish ? dishSort("dishes", sortChoices) : null, within = isDish ? dishSorter(sortNow) : byName;
+    // Grouped by menu, a dish on two menus shows under each of them.
+    const shown = !byMenuNow ? list.map((r) => ({ r, group: isDish ? dishCat(r) : null })).sort((a, b) => (isDish ? catOrder(a.r, b.r) : 0) || within(a.r, b.r))
+      : list.flatMap((r) => (menusOf(r).length ? menusOf(r) : [NO_MENU]).map((group) => ({ r, group }))).sort((a, b) => byMenuName(a.group, b.group) || within(a.r, b.r));
+    const seen = new Set();
     let current = null;
-    const rows = list.map((r) => {
+    const rows = shown.map(({ r, group }, k) => {
       const s = coster.summary(r.id);
       const flag = r.review || s.problems.length ? "1" : "0";
-      const group = isDish ? groupOf(r) : null;
+      // The same dish again under another menu: its boxes get their own names, so typing in one doesn't land in the other.
+      const again = seen.has(r.id) ? "-" + k : "";
+      seen.add(r.id);
       const head = isDish && group !== current ? `<tr class="section-row" data-section="${esc(group)}"><th colspan="8" scope="colgroup">${esc(group)}${byMenuNow && group !== NO_MENU
         ? ` <a class="section-row__link" href="#/menu/${encodeURIComponent(group)}">Open menu →</a>` : ""}</th></tr>` : "";
       current = group;
-      return head + `<tr data-search="${esc((r.name + " " + (r.menu || "") + " " + (r.category || "")).toLowerCase())}" data-group="${esc(r.menu || "")}" ${isDish ? `data-sec="${esc(group)}"` : ""} data-flag="${flag}">
+      return head + `<tr data-search="${esc((r.name + " " + menusOf(r).join(" ") + " " + (r.category || "")).toLowerCase())}" data-group="${esc(menusOf(r).join("\n"))}" ${isDish ? `data-sec="${esc(group)}"` : ""} data-flag="${flag}">
         <td><a href="#/recipe/${encodeURIComponent(r.id)}">${esc(r.name)}</a> ${flagIcon(r.review)}${s.problems.length ? `<span class="warn" title="${esc([...new Set(s.problems)].join(", "))}">missing prices</span>` : ""}</td>
-        ${isDish ? `<td class="hide-sm"><input class="in in--cat" list="dl-dish-cats" data-suggest-all data-k="dcat-${esc(r.id)}" data-act="dish-cat" data-id="${esc(r.id)}" value="${esc(r.category || "")}" placeholder="Category" aria-label="Category of ${esc(r.name)}" /></td>
-          <td class="hide-sm"><input class="in in--menu" list="dl-menus" data-suggest-all data-k="dmenu-${esc(r.id)}" data-act="dish-menu" data-id="${esc(r.id)}" value="${esc(r.menu || "")}" placeholder="Menu" aria-label="Menu of ${esc(r.name)}" /></td>` : ""}
+        ${isDish ? `<td class="hide-sm"><input class="in in--cat" list="dl-dish-cats" data-suggest-all data-k="dcat-${esc(r.id)}${again}" data-act="dish-cat" data-id="${esc(r.id)}" value="${esc(r.category || "")}" placeholder="Category" aria-label="Category of ${esc(r.name)}" /></td>
+          <td class="hide-sm"><input class="in in--menu" list="dl-menus" data-suggest-all data-k="dmenu-${esc(r.id)}${again}" data-act="dish-menu" data-id="${esc(r.id)}" value="${esc(menusOf(r).join(", "))}" placeholder="Menu" aria-label="Menus of ${esc(r.name)}, separated by commas" title="Several menus: separate them with commas" /></td>` : ""}
         <td class="num">${money(s.perPortion)}${isDish ? "" : `<span class="muted">${per(r.yield_unit)}</span>`}</td>
         ${isDish ? `<td class="num">${money(s.suggested)}</td><td class="num">${money(s.menuPrice)}</td><td class="num">${foodCostCell(s)}</td>` : `<td class="num">${money(s.total)}</td><td class="num muted">${numText(r.yield_qty)} ${esc(unitLabel(r.yield_unit))}</td>`}
         <td>${changeChip(s)}</td>
@@ -1121,9 +1163,10 @@
         <label class="check"><input type="checkbox" data-filter-flag /> Needs checking</label>
         ${isDish ? `<span class="group-by" role="group" aria-label="Group dishes by"><span class="muted">Group by</span>
           <button type="button" class="sec" data-act="dish-group" data-by="category" aria-pressed="${!byMenuNow}">Category</button>
-          <button type="button" class="sec" data-act="dish-group" data-by="menu" aria-pressed="${byMenuNow}">Menu</button></span>` : ""}
+          <button type="button" class="sec" data-act="dish-group" data-by="menu" aria-pressed="${byMenuNow}">Menu</button></span>
+        ${sortControl("dishes", sortChoices, sortNow)}` : ""}
       </div>
-      ${isDish ? sectionChips(byMenuNow ? "dishes-menu" : "dishes", list.map(groupOf)) : ""}
+      ${isDish ? sectionChips(byMenuNow ? "dishes-menu" : "dishes", shown.map((x) => x.group)) : ""}
       ${isDish && Store.part9Old() ? `<p class="note note--bad">Run part 9 of supabase/schema.sql in Supabase (SQL Editor) to save dish categories.</p>` : ""}
       ${isDish ? `<p class="hint">Target: cost × multiplier (×4 by default, a 25% food cost). <span class="fc fc--ok">on target</span> = at or under target, <span class="fc fc--over">over</span> = over it.</p>` : `<p class="hint">${SITE.commis ? "Preps are the things you make ahead (sauces, doughs, stocks…): cost them once, then use them in any dish." : `Preps are the "Recipe 1–6" tabs of your costing sheets. Use them in any dish.`}</p>`}
       <div class="table-wrap"><table class="list cards">
@@ -1243,8 +1286,9 @@
         <div class="head__meta">
           <label>Type <select class="in" data-k="r-kind" data-act="recipe-field" data-field="kind"><option value="dish"${isDish ? " selected" : ""}>Dish</option><option value="prep"${!isDish ? " selected" : ""}>Prep</option></select></label>
           ${isDish ? `<label>Category <input class="in" list="dl-dish-cats" data-suggest-all data-k="r-cat" data-act="recipe-field" data-field="category" value="${esc(r.category || "")}" placeholder="Plats, Dessert…" /></label>
-          <label>Menu <input class="in" list="dl-menus" data-suggest-all data-k="r-menu" data-act="recipe-field" data-field="menu" value="${esc(r.menu || "")}" />${(r.menu || "").trim()
-            ? ` <a class="small" href="#/menu/${encodeURIComponent(r.menu.trim())}">Open menu</a>` : ""}</label>` : ""}
+          <span class="menus" role="group" aria-label="Menus this dish is on">${menusOf(r).length > 1 ? "Menus" : "Menu"}
+            ${menusOf(r).map((m) => `<span class="menus__one"><a href="#/menu/${encodeURIComponent(m)}" title="Open this menu">${esc(m)}</a><button class="icon icon--x" type="button" data-act="menu-remove" data-id="${esc(r.id)}" data-menu="${esc(m)}" aria-label="Take ${esc(r.name)} off ${esc(m)}">×</button></span>`).join("")}
+            <input class="in in--menu" list="dl-menus" data-suggest-all data-k="r-menu-add" data-act="menu-add" data-id="${esc(r.id)}" placeholder="${menusOf(r).length ? "Add another menu" : "Add to a menu"}" aria-label="Add ${esc(r.name)} to a menu" /></span>` : ""}
           ${!isDish ? `<label class="check" title="Counted in the monthly inventory, at what it costs to make"><input type="checkbox" data-k="r-inv" data-act="recipe-field" data-field="in_inventory" ${r.in_inventory === true ? "checked" : ""} /> On the monthly count</label>
           ${r.in_inventory === true ? containerBox("recipe", r) : ""}` : ""}
         </div>
@@ -3593,13 +3637,32 @@
       await saveCategories(kind, categoryNames(kind).filter((c) => c !== name), moving.map((r) => [r, ""]));
     },
     // The menu a dish is on: one already in use, or a new one typed in.
+    // A dish's menus from the Dishes list: several, separated by commas. A name that's already a menu, commas and all, stays one.
     async "dish-menu"(el) {
       const r = get("recipes", el.dataset.id);
-      const menu = menuSpelling(el.value || "");
-      if (!r || menu === (r.menu || "")) return render();
+      if (!r) return render();
+      const typed = String(el.value || ""), whole = allMenus().find((m) => fold(m) === fold(typed.trim()));
+      const menu = menuText(whole ? [whole] : typed.split(",").map(menuSpelling));
+      if (menu === menuText(menusOf(r))) return render();
       await write(() => patch("recipes", r.id, { menu }));
     },
+    // On the dish's page: onto one more menu, or off one.
+    async "menu-add"(el) {
+      const r = get("recipes", el.dataset.id), name = menuSpelling(el.value || "");
+      if (!r || !name) return;
+      if (menusOf(r).includes(name)) { el.value = ""; toast(`Already on ${name}.`); return render(); }
+      await write(() => patch("recipes", r.id, { menu: menuText([...menusOf(r), name]) }));
+      if (!write.failed) toast(`On ${name} now.`);
+    },
+    async "menu-remove"(el) {
+      const r = get("recipes", el.dataset.id), name = el.dataset.menu;
+      if (!r) return render();
+      await write(() => patch("recipes", r.id, { menu: menuText(menusOf(r).filter((m) => m !== name)) }));
+      if (!write.failed) toast(`Off ${name}. It's still on your list of dishes.`);
+    },
     "dish-group"(el) { writeJSON(DISH_GROUP, el.dataset.by); render(); },
+    "dish-sort"(el) { writeJSON(DISH_SORT, { ...readJSON(DISH_SORT, {}), [el.dataset.page]: { by: el.value, rev: false } }); render(); },
+    "dish-sort-dir"(el) { writeJSON(DISH_SORT, { ...readJSON(DISH_SORT, {}), [el.dataset.page]: { by: el.dataset.by, rev: el.dataset.rev !== "1" } }); render(); },
     "hist-period"(el) { writeJSON(HIST_KEY, el.dataset.p); render(); },
     // Scale the card: starts from the card's saved standard, else the biggest amount by weight (usually the main
     // ingredient) set to 1 kg. Saved with your account; the recipe itself is never changed.
@@ -4491,7 +4554,7 @@
   // A menu is the dishes with the same Menu. Its page lists them with prices, costs and what's in them, and the preps
   // they use; its folder (a .zip download, or a folder in Drive) holds the menu list (Excel), the menu lists to print
   // (Word, kitchen and front of house), a recipe card for every dish and prep, and each dish's costing sheet.
-  const menuDishList = (name) => data.recipes.filter((r) => r.kind === "dish" && (r.menu || "").trim() === name).sort(byCat);
+  const menuDishList = (name) => data.recipes.filter((r) => r.kind === "dish" && menusOf(r).includes(name)).sort(byCat);
   function menuModel(name) {
     const dishes = menuDishList(name), preps = new Map();
     const lineItem = (l) => (l.ingredient_id ? get("ingredients", l.ingredient_id) : get("recipes", l.sub_recipe_id));
@@ -4545,6 +4608,9 @@
     if (!m.dishes.length) return `<p class="empty">No dishes on “${esc(name)}” any more. <a href="#/dishes">Back to dishes</a></p>`;
     const priced = m.dishes.filter((d) => d.foodCost != null);
     const avg = priced.length ? priced.reduce((s, d) => s + d.foodCost, 0) / priced.length : null;
+    // On screen only: the menu's files keep their menu order.
+    const sortChoices = Object.keys(SORT_LABELS), sortNow = dishSort("menu", sortChoices), within = dishSorter(sortNow);
+    const sorted = m.dishes.slice().sort((a, b) => within(a.recipe, b.recipe));
     const d = settings.drive || {}, drive = GDrive.configured() && d.folder;
     const picks = menuPicks(), sheetsOk = GDrive.configured() && d.costsheet;
     const cardsFrom = GDrive.configured() && d.template ? `your template, “${esc(d.template.name)}”` : GDrive.configured() ? "a plain layout (no card template picked)" : "a plain layout";
@@ -4554,9 +4620,10 @@
       <p class="crumbs"><a href="#/dishes">← Dishes</a></p>
       <div class="bar"><h1>${esc(name)}</h1></div>
       <p class="muted">${m.dishes.length} dish${m.dishes.length === 1 ? "" : "es"} · ${m.preps.length} prep${m.preps.length === 1 ? "" : "s"}${avg != null ? ` · average food cost ${pct(avg)}` : ""}${priced.length < m.dishes.length ? ` · ${m.dishes.length - priced.length} without a menu price` : ""}</p>
+      ${m.dishes.length > 1 ? `<div class="filters">${sortControl("menu", sortChoices, sortNow)}</div>` : ""}
       <div class="table-wrap"><table class="list cards">
         <thead><tr><th>Dish</th><th>Category</th><th class="num">Menu price</th><th class="num">Cost / portion</th><th class="num">Food cost</th><th>Allergens</th><th>What's in it</th></tr></thead>
-        <tbody>${m.dishes.map((x) => `<tr>
+        <tbody>${sorted.map((x) => `<tr>
           <td><a href="#/recipe/${encodeURIComponent(x.recipe.id)}">${esc(x.name)}</a></td>
           <td>${esc(x.category) || `<span class="muted">—</span>`}</td>
           <td class="num">${x.price == null ? `<span class="muted">—</span>` : money(x.price)}</td>
@@ -4596,7 +4663,7 @@
   async function menuFiles(name, picks) {
     const m = menuModel(name), base = MenuFile.fileName(name), files = [], skipped = [], d = settings.drive || {};
     m.say = say; // the bar's words in Barback's files
-    const say = (t) => toast(t);
+    const tell = (t) => toast(t); // how far it is (its own name: "say" here is the bar's words, above)
     if (picks.list) files.push({ path: `${base} – menu list.xlsx`, data: await MenuFile.menuXlsx(m), mime: MenuFile.XLSX_TYPE });
     if (picks.print) {
       files.push({ path: `${base} – menu (front of house).docx`, data: await MenuFile.menuDocx(m, "front"), mime: MenuFile.DOCX_TYPE });
@@ -4607,7 +4674,7 @@
       const tpl = GDrive.configured() && d.template ? await cardTemplate() : null;
       const all = [...m.dishes.map((x) => ["Dishes", x.recipe]), ...m.preps.map((x) => ["Preps", x.recipe])];
       for (const [k, [kind, r]] of all.entries()) {
-        if (k % 5 === 0) say(`Making the recipe cards: ${k + 1} of ${all.length}…`);
+        if (k % 5 === 0) tell(`Making the recipe cards: ${k + 1} of ${all.length}…`);
         const card = cardData(r);
         try {
           files.push({ path: `Recipe cards/${kind}/${MenuFile.fileName(r.name)}.docx`, data: tpl ? await CardFill.docx(tpl.bytes, card) : await MenuFile.cardDocx(card), mime: MenuFile.DOCX_TYPE });
@@ -4617,7 +4684,7 @@
     if (picks.sheets && GDrive.configured() && d.costsheet) {
       const { bytes } = await GDrive.excelOf(d.costsheet.id);
       for (const [k, x] of m.dishes.entries()) {
-        if (k % 3 === 0) say(`Making the costing sheets: ${k + 1} of ${m.dishes.length}…`);
+        if (k % 3 === 0) tell(`Making the costing sheets: ${k + 1} of ${m.dishes.length}…`);
         try {
           files.push({ path: `Costing sheets/${MenuFile.fileName(x.name)}.xlsx`, data: await SheetFill.xlsx(bytes, costSheetData(x.recipe)), mime: MenuFile.XLSX_TYPE });
         } catch (e) { skipped.push(`Costing sheet for ${x.name}: ${e.message}`); }
